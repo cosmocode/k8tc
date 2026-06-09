@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path"
 	"strings"
 	"testing"
 
@@ -12,8 +13,10 @@ import (
 	"github.com/cosmocode/k8tc/internal/file"
 )
 
-// fakeBackend satisfies both the panelFS and transferer interfaces, standing in
-// for the local FS, the remote lister, and the transfer manager at once.
+// fakeBackend satisfies the panelFS, pathFlavor, and transferer interfaces,
+// standing in for the local FS, the remote lister, the path semantics of both
+// sides, and the transfer manager at once. The path methods use POSIX
+// semantics, which the tests' POSIX-style paths exercise on either side.
 type fakeBackend struct{}
 
 func (fakeBackend) List(string) ([]file.Info, error)                        { return nil, nil }
@@ -21,11 +24,14 @@ func (fakeBackend) Delete(context.Context, string) error                    { re
 func (fakeBackend) Mkdir(context.Context, string) error                     { return nil }
 func (fakeBackend) Pull(context.Context, string, string, func(int64)) error { return nil }
 func (fakeBackend) Push(context.Context, string, string, func(int64)) error { return nil }
+func (fakeBackend) Join(dir, name string) string                            { return path.Join(dir, name) }
+func (fakeBackend) Dir(p string) string                                     { return path.Dir(p) }
+func (fakeBackend) Base(p string) string                                    { return path.Base(p) }
 
 func sampleModel(t *testing.T, w, h int) Model {
 	t.Helper()
 	b := fakeBackend{}
-	m := New(b, b, b, "POD nginx-abc", "/var/www", "/home/user")
+	m := New(b, b, b, b, b, "POD nginx-abc", "/var/www", "/home/user")
 	next, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	m = next.(Model)
 	files := []file.Info{

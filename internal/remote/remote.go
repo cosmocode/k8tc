@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"path"
 	"strings"
 
 	"github.com/cosmocode/k8tc/internal/file"
@@ -51,6 +52,16 @@ func (l *Lister) Delete(ctx context.Context, p string) error {
 func (l *Lister) Mkdir(ctx context.Context, p string) error {
 	return l.run(ctx, "mkdir", "--", p)
 }
+
+// Paths is the pod side's path-string semantics: POSIX separators, via the path
+// package, since the pod is Linux. It is stateless and kept separate from
+// Lister so this pure path math stays untangled from the kube I/O — the UI
+// selects it for the remote panel. It is the remote counterpart to local.Paths.
+type Paths struct{}
+
+func (Paths) Join(dir, name string) string { return path.Join(dir, name) }
+func (Paths) Dir(p string) string          { return path.Dir(p) }
+func (Paths) Base(p string) string         { return path.Base(p) }
 
 // run executes a pod command whose stdout we don't need, surfacing a trimmed
 // stderr message on failure. Canceling ctx kills the kubectl process.

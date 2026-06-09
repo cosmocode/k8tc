@@ -66,7 +66,7 @@ func main() {
 	if container != "" {
 		remoteLabel += " [" + container + "]"
 	}
-	model := ui.New(local.FS{}, remoteLister, xfer, remoteLabel, remotePath, localPath)
+	model := ui.New(local.FS{}, local.Paths{}, remoteLister, remote.Paths{}, xfer, remoteLabel, remotePath, localPath)
 
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {

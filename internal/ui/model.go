@@ -3,8 +3,6 @@ package ui
 import (
 	"context"
 	"fmt"
-	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -23,6 +21,18 @@ type panelFS interface {
 	List(path string) ([]file.Info, error)
 	Delete(ctx context.Context, path string) error
 	Mkdir(ctx context.Context, path string) error
+}
+
+// pathFlavor is one side's path-string semantics: how it joins a directory and
+// an entry name, and finds a path's parent and base. The pod side is POSIX, the
+// local side OS-native; the model picks the right one per panel via pathsFor.
+// internal/local.Paths and internal/remote.Paths satisfy it. It is pure string
+// math with no I/O, which is why it is its own small interface rather than part
+// of panelFS.
+type pathFlavor interface {
+	Join(dir, name string) string
+	Dir(p string) string
+	Base(p string) string
 }
 
 // transferer moves a file or directory tree between local disk and the pod.
@@ -160,7 +170,11 @@ type mkdirState struct {
 type Model struct {
 	localFS  panelFS
 	remoteFS panelFS
-	xfer     transferer
+
+	localPaths  pathFlavor
+	remotePaths pathFlavor
+
+	xfer transferer
 
 	local  Panel
 	remote Panel
@@ -181,18 +195,21 @@ type Model struct {
 }
 
 // New builds the initial model. localFS/remoteFS load and delete on each panel
-// and xfer performs copies between them; remoteLabel is the pod-side panel
-// title and localPath/remotePath are the starting dirs.
-func New(localFS, remoteFS panelFS, xfer transferer, remoteLabel, remotePath, localPath string) Model {
+// and xfer performs copies between them; localPaths/remotePaths give each side
+// its path semantics. remoteLabel is the pod-side panel title and
+// localPath/remotePath are the starting dirs.
+func New(localFS panelFS, localPaths pathFlavor, remoteFS panelFS, remotePaths pathFlavor, xfer transferer, remoteLabel, remotePath, localPath string) Model {
 	return Model{
-		localFS:  localFS,
-		remoteFS: remoteFS,
-		xfer:     xfer,
-		focus:    focusLocal,
-		keys:     defaultKeys(),
-		status:   "Space to mark, F5 to copy, F8 to delete.",
-		local:    Panel{label: "LOCAL", cwd: localPath},
-		remote:   Panel{label: remoteLabel, cwd: remotePath, isRemote: true},
+		localFS:     localFS,
+		remoteFS:    remoteFS,
+		localPaths:  localPaths,
+		remotePaths: remotePaths,
+		xfer:        xfer,
+		focus:       focusLocal,
+		keys:        defaultKeys(),
+		status:      "Space to mark, F5 to copy, F8 to delete.",
+		local:       Panel{label: "LOCAL", cwd: localPath},
+		remote:      Panel{label: remoteLabel, cwd: remotePath, isRemote: true},
 	}
 }
 
@@ -536,14 +553,15 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 	if sel == nil || !sel.IsDir {
 		return m, nil // files are a no-op in v1
 	}
+	paths := m.pathsFor(m.focus)
 	if sel.Name == ".." {
-		parent := parentPath(m.focus, p.cwd)
+		parent := paths.Dir(p.cwd)
 		if parent == p.cwd {
 			return m, nil // already at root
 		}
-		return m, m.loadPanel(m.focus, parent, cursorSelect, baseName(m.focus, p.cwd))
+		return m, m.loadPanel(m.focus, parent, cursorSelect, paths.Base(p.cwd))
 	}
-	child := joinPath(m.focus, p.cwd, sel.Name)
+	child := paths.Join(p.cwd, sel.Name)
 	return m, m.loadPanel(m.focus, child, cursorReset, "")
 }
 
@@ -645,7 +663,7 @@ func (m Model) handleMkdirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil // nothing to create; keep the prompt open
 		}
 		side, dir := m.mkdir.side, m.mkdir.dir
-		full := joinPath(side, dir, name)
+		full := m.pathsFor(side).Join(dir, name)
 		m.mode = modeBrowse
 		m.mkdir = mkdirState{}
 		m.status = "Creating " + name + "…"
@@ -665,16 +683,15 @@ func (m *Model) startItem() tea.Cmd {
 	ch := make(chan int64, 1)
 	m.job.progressCh = ch
 
+	srcFull := m.pathsFor(m.job.src).Join(m.job.srcDir, it.name)
 	if m.job.dest == focusRemote {
-		localFull := filepath.Join(m.job.srcDir, it.name)
 		return tea.Batch(
-			pushCmd(m.job.ctx, m.xfer, localFull, m.job.destDir, it.name, ch),
+			pushCmd(m.job.ctx, m.xfer, srcFull, m.job.destDir, it.name, ch),
 			listenProgress(ch),
 		)
 	}
-	remoteFull := path.Join(m.job.srcDir, it.name)
 	return tea.Batch(
-		pullCmd(m.job.ctx, m.xfer, remoteFull, m.job.destDir, it.name, ch),
+		pullCmd(m.job.ctx, m.xfer, srcFull, m.job.destDir, it.name, ch),
 		listenProgress(ch),
 	)
 }
@@ -716,7 +733,7 @@ func (m Model) finishJob() (tea.Model, tea.Cmd) {
 // m.del.index, so the surrounding handler must have it set.
 func (m *Model) startDelete() tea.Cmd {
 	it := m.del.items[m.del.index]
-	full := joinPath(m.del.side, m.del.dir, it.name)
+	full := m.pathsFor(m.del.side).Join(m.del.dir, it.name)
 	return deleteCmd(m.del.ctx, m.fsFor(m.del.side), full, it.name)
 }
 
@@ -978,6 +995,15 @@ func (m Model) fsFor(which focus) panelFS {
 	return m.remoteFS
 }
 
+// pathsFor returns the path semantics of the given side: OS-native for the
+// local panel, POSIX for the pod. It is the path-math counterpart to fsFor.
+func (m Model) pathsFor(which focus) pathFlavor {
+	if which == focusLocal {
+		return m.localPaths
+	}
+	return m.remotePaths
+}
+
 func indexOf(files []file.Info, name string) int {
 	for i, f := range files {
 		if f.Name == name {
@@ -985,25 +1011,4 @@ func indexOf(files []file.Info, name string) int {
 		}
 	}
 	return 0
-}
-
-func joinPath(which focus, dir, name string) string {
-	if which == focusLocal {
-		return filepath.Join(dir, name)
-	}
-	return path.Join(dir, name)
-}
-
-func parentPath(which focus, dir string) string {
-	if which == focusLocal {
-		return filepath.Dir(dir)
-	}
-	return path.Dir(dir)
-}
-
-func baseName(which focus, dir string) string {
-	if which == focusLocal {
-		return filepath.Base(dir)
-	}
-	return path.Base(dir)
 }

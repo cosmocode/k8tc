@@ -30,6 +30,16 @@ func (FS) Delete(_ context.Context, p string) error { return os.RemoveAll(p) }
 // interface symmetry with the remote side; a local mkdir is not cancelable.
 func (FS) Mkdir(_ context.Context, p string) error { return os.Mkdir(p, 0o755) }
 
+// Paths is the local side's path-string semantics: OS-native separators, via
+// path/filepath. It is stateless and kept separate from FS so this pure path
+// math stays untangled from filesystem I/O — the UI selects it for the local
+// panel. It is the local counterpart to remote.Paths.
+type Paths struct{}
+
+func (Paths) Join(dir, name string) string { return filepath.Join(dir, name) }
+func (Paths) Dir(p string) string          { return filepath.Dir(p) }
+func (Paths) Base(p string) string         { return filepath.Base(p) }
+
 // List returns the entries of dir as file.Info, sorted dirs-first, with a
 // synthesized ".." prepended unless dir is the filesystem root.
 func List(dir string) ([]file.Info, error) {
