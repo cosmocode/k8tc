@@ -4,6 +4,7 @@
 package local
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 
@@ -16,6 +17,12 @@ type FS struct{}
 
 // List implements the panel lister for local directories.
 func (FS) List(dir string) ([]file.Info, error) { return List(dir) }
+
+// Delete removes the file or directory tree at p, recursively. It is the local
+// counterpart to remote deletion. The context is accepted for interface
+// symmetry with the remote side; a local remove runs to completion and is not
+// cancelable.
+func (FS) Delete(_ context.Context, p string) error { return os.RemoveAll(p) }
 
 // List returns the entries of dir as file.Info, sorted dirs-first, with a
 // synthesized ".." prepended unless dir is the filesystem root.

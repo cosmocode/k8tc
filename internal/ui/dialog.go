@@ -15,6 +15,7 @@ type dialog struct {
 	title  string
 	body   []string
 	footer string
+	danger bool // destructive action: render with the warning (red) border
 }
 
 // box renders the dialog as a bordered box sized to its content, capped at
@@ -49,7 +50,11 @@ func (d dialog) box(maxWidth int) string {
 		lines = append(lines, padRight(dialogButtonStyle.Render(truncate(d.footer, contentW)), contentW))
 	}
 
-	return dialogStyle.Render(strings.Join(lines, "\n"))
+	style := dialogStyle
+	if d.danger {
+		style = dialogDangerStyle
+	}
+	return style.Render(strings.Join(lines, "\n"))
 }
 
 // plural returns "s" unless n is 1, for simple "N item(s)" phrasing.

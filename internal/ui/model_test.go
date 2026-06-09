@@ -11,11 +11,12 @@ import (
 	"github.com/cosmocode/k8tc/internal/file"
 )
 
-// fakeBackend satisfies both the lister and transferer interfaces, standing in
+// fakeBackend satisfies both the panelFS and transferer interfaces, standing in
 // for the local FS, the remote lister, and the transfer manager at once.
 type fakeBackend struct{}
 
 func (fakeBackend) List(string) ([]file.Info, error)                        { return nil, nil }
+func (fakeBackend) Delete(context.Context, string) error                    { return nil }
 func (fakeBackend) Pull(context.Context, string, string, func(int64)) error { return nil }
 func (fakeBackend) Push(context.Context, string, string, func(int64)) error { return nil }
 
@@ -293,6 +294,148 @@ func TestAbortStopsBatch(t *testing.T) {
 	}
 	if !m.statusErr || !strings.Contains(m.status, "Aborted") {
 		t.Errorf("status = %q (err=%v), want an 'Aborted' summary", m.status, m.statusErr)
+	}
+}
+
+func TestDeleteMarkedConfirmsThenDeletes(t *testing.T) {
+	m := markLocal(t, sampleModel(t, 80, 24))
+
+	// F8 opens the destructive confirm dialog with both marked items; nothing
+	// is deleted yet.
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyF8})
+	m = next.(Model)
+	if m.mode != modeConfirmDelete {
+		t.Fatalf("mode = %v, want confirmDelete", m.mode)
+	}
+	if len(m.del.items) != 2 {
+		t.Fatalf("delete job has %d items, want 2", len(m.del.items))
+	}
+	if m.del.side != focusLocal {
+		t.Errorf("side = %v, want local", m.del.side)
+	}
+	if cmd != nil {
+		t.Errorf("confirm dialog should not start deleting yet")
+	}
+
+	// Enter starts the batch.
+	next, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if m.mode != modeDeleting {
+		t.Fatalf("mode = %v, want deleting", m.mode)
+	}
+	if cmd == nil {
+		t.Errorf("starting the batch produced no command")
+	}
+
+	// First item finishes → advance to the second, still deleting.
+	next, _ = m.Update(deleteDoneMsg{name: "assets"})
+	m = next.(Model)
+	if m.mode != modeDeleting || m.del.index != 1 {
+		t.Fatalf("after item 1: mode=%v index=%d, want deleting/1", m.mode, m.del.index)
+	}
+
+	// Second item finishes → batch done, back to browsing, marks cleared.
+	next, _ = m.Update(deleteDoneMsg{name: "index.html"})
+	m = next.(Model)
+	if m.mode != modeBrowse {
+		t.Fatalf("mode = %v, want browse", m.mode)
+	}
+	if len(m.local.marked) != 0 {
+		t.Errorf("marks not cleared after delete: %v", m.local.marked)
+	}
+	if m.statusErr || !strings.Contains(m.status, "Deleted 2") {
+		t.Errorf("status = %q (err=%v), want a 'Deleted 2' summary", m.status, m.statusErr)
+	}
+}
+
+func TestDeleteFallsBackToHighlightWhenNothingMarked(t *testing.T) {
+	m := sampleModel(t, 80, 24)
+	m.local.cursor = 2 // index.html, nothing marked
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyF8})
+	m = next.(Model)
+	if m.mode != modeConfirmDelete {
+		t.Fatalf("mode = %v, want confirmDelete", m.mode)
+	}
+	if len(m.del.items) != 1 || m.del.items[0].name != "index.html" {
+		t.Errorf("delete items = %+v, want just index.html", m.del.items)
+	}
+}
+
+func TestDeleteOnDotDotIsNoop(t *testing.T) {
+	m := sampleModel(t, 80, 24)
+	// Cursor starts on ".." — deleting it must do nothing.
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyF8})
+	m = next.(Model)
+	if m.mode != modeBrowse {
+		t.Errorf("deleting '..' left browse mode: %v", m.mode)
+	}
+	if cmd != nil {
+		t.Errorf("deleting '..' produced a command")
+	}
+}
+
+func TestConfirmDeleteEscCancels(t *testing.T) {
+	m := markLocal(t, sampleModel(t, 80, 24))
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyF8})
+	m = next.(Model)
+	if m.mode != modeConfirmDelete {
+		t.Fatalf("mode = %v, want confirmDelete", m.mode)
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+	if m.mode != modeBrowse {
+		t.Errorf("Esc on confirmDelete left mode = %v, want browse", m.mode)
+	}
+	if cmd != nil {
+		t.Errorf("cancelling produced a command")
+	}
+	// Esc must not have deleted anything; marks stay put.
+	if !m.local.isMarked("assets") || !m.local.isMarked("index.html") {
+		t.Errorf("cancelling cleared marks: %v", m.local.marked)
+	}
+}
+
+func TestAbortStopsDelete(t *testing.T) {
+	m := markLocal(t, sampleModel(t, 80, 24))
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyF8})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+
+	// Abort mid-batch.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+	if !m.del.aborted {
+		t.Fatalf("Esc during delete did not set aborted")
+	}
+
+	// The in-flight item reports back; the batch tears down regardless.
+	next, _ = m.Update(deleteDoneMsg{err: context.Canceled, name: "assets"})
+	m = next.(Model)
+	if m.mode != modeBrowse {
+		t.Fatalf("mode = %v after abort, want browse", m.mode)
+	}
+	if !m.statusErr || !strings.Contains(m.status, "Aborted") {
+		t.Errorf("status = %q (err=%v), want an 'Aborted' summary", m.status, m.statusErr)
+	}
+}
+
+func TestDeleteConfirmDialogIsDanger(t *testing.T) {
+	m := markLocal(t, sampleModel(t, 80, 24))
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyF8})
+	m = next.(Model)
+	if d := m.confirmDeleteDialog(); !d.danger {
+		t.Errorf("delete confirm dialog should be flagged danger")
+	}
+	// The dialog must surface the destructive count and be visible over the panels.
+	view := m.View()
+	if !strings.Contains(view, "Delete 2 items?") {
+		t.Errorf("delete dialog not visible in overlaid view")
+	}
+	if !strings.Contains(view, "LOCAL") {
+		t.Errorf("panels hidden behind delete dialog; want them composited underneath")
 	}
 }
 

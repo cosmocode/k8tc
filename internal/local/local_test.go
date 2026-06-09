@@ -1,6 +1,7 @@
 package local
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,6 +36,41 @@ func TestList(t *testing.T) {
 	// Mode strings should look like ls output.
 	if files[1].Mode == "" || files[1].Mode[0] != 'd' {
 		t.Errorf("dir mode = %q, want leading 'd'", files[1].Mode)
+	}
+}
+
+func TestDelete(t *testing.T) {
+	dir := t.TempDir()
+	// A non-empty subdirectory exercises the recursive removal.
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(filepath.Join(sub, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "nested", "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(file, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (FS{}).Delete(context.Background(), file); err != nil {
+		t.Fatalf("Delete file: %v", err)
+	}
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Errorf("file still present after Delete: %v", err)
+	}
+
+	if err := (FS{}).Delete(context.Background(), sub); err != nil {
+		t.Fatalf("Delete dir: %v", err)
+	}
+	if _, err := os.Stat(sub); !os.IsNotExist(err) {
+		t.Errorf("dir still present after recursive Delete: %v", err)
+	}
+
+	// Deleting a path that no longer exists is not an error.
+	if err := (FS{}).Delete(context.Background(), file); err != nil {
+		t.Errorf("Delete of missing path = %v, want nil", err)
 	}
 }
 

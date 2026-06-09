@@ -6,6 +6,7 @@ package remote
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strings"
 
@@ -33,6 +34,23 @@ func (l *Lister) List(p string) ([]file.Info, error) {
 		return parseLS(out, p, false), nil
 	}
 	return parseLS(out, p, true), nil
+}
+
+// Delete removes the file or directory tree at p inside the pod, recursively,
+// by running `rm -rf -- <p>`. The `--` guards entries whose names begin with a
+// dash. Canceling ctx kills the kubectl process, which is how an in-flight
+// delete is aborted.
+func (l *Lister) Delete(ctx context.Context, p string) error {
+	cmd := l.Client.ExecContext(ctx, false, "rm", "-rf", "--", p)
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(errb.String()); msg != "" {
+			return fmt.Errorf("%s", msg)
+		}
+		return err
+	}
+	return nil
 }
 
 func (l *Lister) runLS(p string, fullTime bool) (string, error) {

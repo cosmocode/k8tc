@@ -11,7 +11,7 @@ between your local machine and a Kubernetes pod. Transfers stream `tar` over
 │ index.html                 1.2K ││ index.html                 1.2K │
 │ go.mod                      56B ││ go.mod                      56B │
 ╰─────────────────────────────────╯╰─────────────────────────────────╯
- Tab switch  ↑↓ move  ⏎ open  Space mark  F5 copy  r refresh  q quit
+ Tab switch  ↑↓ move  ⏎ open  Space mark  F5 copy  F8 del  r refresh  q quit
 ```
 
 ## Requirements
@@ -55,6 +55,7 @@ k8tc --pod <name> [flags]
 | `Enter`        | Descend into a directory / ascend via `..`                    |
 | `Space`/`Insert` | Mark/unmark the entry under the cursor and move down        |
 | `F5` or `c`    | Copy the marked entries (or the highlighted one) to the other panel |
+| `F8` or `d`    | Delete the marked entries (or the highlighted one) from the focused panel |
 | `r`            | Refresh the focused panel                                     |
 | `q`, `Ctrl+C`  | Quit                                                          |
 
@@ -69,6 +70,13 @@ count and bytes transferred, with `Esc` to **abort**. Aborting stops the queue
 and leaves already-copied items in place (the partially-copied item is not
 rolled back). Directory copies are recursive; transfers run asynchronously, so a
 large transfer never freezes the UI.
+
+`F8` deletes instead of copying, acting on the **focused** panel (marked entries,
+or the highlighted one). It shows a **confirmation dialog** — styled as a
+destructive action — that spells out what will be removed and from where.
+**Deletes are recursive and cannot be undone**: a directory and everything under
+it goes. Like copies, deletes run asynchronously with a progress dialog and `Esc`
+to abort the remaining items; entries already removed stay removed.
 
 ## A note on ownership
 

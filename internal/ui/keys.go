@@ -12,6 +12,7 @@ type keyMap struct {
 	Enter   key.Binding
 	Mark    key.Binding
 	Copy    key.Binding
+	Delete  key.Binding
 	Refresh key.Binding
 	Cancel  key.Binding
 	Quit    key.Binding
@@ -27,6 +28,7 @@ func defaultKeys() keyMap {
 		Enter:   key.NewBinding(key.WithKeys("enter")),
 		Mark:    key.NewBinding(key.WithKeys(" ", "insert")),
 		Copy:    key.NewBinding(key.WithKeys("f5", "c")),
+		Delete:  key.NewBinding(key.WithKeys("f8", "d")),
 		Refresh: key.NewBinding(key.WithKeys("r")),
 		Cancel:  key.NewBinding(key.WithKeys("esc")),
 		Quit:    key.NewBinding(key.WithKeys("q", "ctrl+c")),

@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,5 +58,28 @@ func TestListerList(t *testing.T) {
 	}
 	if f, ok := got["index.html"]; !ok || f.IsDir || f.Size != 5 {
 		t.Errorf("index.html wrong: %+v", f)
+	}
+}
+
+func TestListerDelete(t *testing.T) {
+	if _, err := exec.LookPath("rm"); err != nil {
+		t.Skip("rm not available")
+	}
+	l := &Lister{Client: &kube.Client{Bin: fakeKubectl(t), Pod: "pod"}}
+	root := t.TempDir()
+	// A non-empty directory exercises the recursive `rm -rf`.
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := l.Delete(context.Background(), sub); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := os.Stat(sub); !os.IsNotExist(err) {
+		t.Errorf("dir still present after recursive Delete: %v", err)
 	}
 }

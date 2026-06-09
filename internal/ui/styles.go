@@ -43,6 +43,12 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(colorFocus).
 			Padding(0, 1)
+	// dialogDangerStyle marks a destructive confirmation (delete) with a red
+	// border so it reads differently from the ordinary copy dialog.
+	dialogDangerStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(colorError).
+				Padding(0, 1)
 	dialogTitleStyle  = lipgloss.NewStyle().Foreground(colorTitle).Bold(true)
 	dialogButtonStyle = lipgloss.NewStyle().Foreground(colorHelp)
 )

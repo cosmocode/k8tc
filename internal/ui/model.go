@@ -14,11 +14,13 @@ import (
 	overlay "github.com/rmhubbert/bubbletea-overlay"
 )
 
-// lister reads a directory on one side of the view (local disk or a pod). Both
-// internal/local and internal/remote satisfy it, which is what lets a panel
-// load itself without the model knowing which side it is.
-type lister interface {
+// panelFS is one side of the view (local disk or a pod) as the model sees it:
+// something it can list and delete entries on. Both internal/local and
+// internal/remote satisfy it, which is what lets a panel load and mutate itself
+// without the model knowing which side it is.
+type panelFS interface {
 	List(path string) ([]file.Info, error)
+	Delete(ctx context.Context, path string) error
 }
 
 // transferer moves a file or directory tree between local disk and the pod.
@@ -50,9 +52,11 @@ const (
 type uiMode int
 
 const (
-	modeBrowse   uiMode = iota // normal two-panel browsing
-	modeConfirm                // confirm-before-copy dialog
-	modeProgress               // copy-in-progress dialog (with abort)
+	modeBrowse        uiMode = iota // normal two-panel browsing
+	modeConfirm                     // confirm-before-copy dialog
+	modeProgress                    // copy-in-progress dialog (with abort)
+	modeConfirmDelete               // confirm-before-delete dialog
+	modeDeleting                    // delete-in-progress dialog (with abort)
 )
 
 // copyItem is one entry queued for copying.
@@ -84,11 +88,35 @@ type copyJob struct {
 	progressCh chan int64 // progress channel for the current item
 }
 
+// delItem is one entry queued for deletion.
+type delItem struct {
+	name  string
+	isDir bool
+}
+
+// deleteJob is a batch of entries being removed from one panel's directory.
+// Items are deleted one at a time; the dialog reports progress and canceling
+// ctx aborts the remaining items. Already-deleted entries are gone for good —
+// an abort stops the queue, it does not roll back.
+type deleteJob struct {
+	side  focus  // panel the items are deleted from
+	dir   string // directory they live in (side panel's cwd)
+	items []delItem
+
+	index   int   // item currently deleting (0-based)
+	failed  int   // items that errored (abort excluded)
+	lastErr error // most recent item error, for the summary
+
+	ctx     context.Context
+	cancel  context.CancelFunc
+	aborted bool
+}
+
 // Model is the Bubble Tea root model.
 type Model struct {
-	localList  lister
-	remoteList lister
-	xfer       transferer
+	localFS  panelFS
+	remoteFS panelFS
+	xfer     transferer
 
 	local  Panel
 	remote Panel
@@ -101,24 +129,25 @@ type Model struct {
 
 	mode uiMode
 	job  copyJob
+	del  deleteJob
 
 	keys     keyMap
 	quitting bool
 }
 
-// New builds the initial model. localList/remoteList load each panel and xfer
-// performs copies between them; remoteLabel is the pod-side panel title and
-// localPath/remotePath are the starting dirs.
-func New(localList, remoteList lister, xfer transferer, remoteLabel, remotePath, localPath string) Model {
+// New builds the initial model. localFS/remoteFS load and delete on each panel
+// and xfer performs copies between them; remoteLabel is the pod-side panel
+// title and localPath/remotePath are the starting dirs.
+func New(localFS, remoteFS panelFS, xfer transferer, remoteLabel, remotePath, localPath string) Model {
 	return Model{
-		localList:  localList,
-		remoteList: remoteList,
-		xfer:       xfer,
-		focus:      focusLocal,
-		keys:       defaultKeys(),
-		status:     "Space to mark, F5 to copy to the other panel.",
-		local:      Panel{label: "LOCAL", cwd: localPath},
-		remote:     Panel{label: remoteLabel, cwd: remotePath, isRemote: true},
+		localFS:  localFS,
+		remoteFS: remoteFS,
+		xfer:     xfer,
+		focus:    focusLocal,
+		keys:     defaultKeys(),
+		status:   "Space to mark, F5 to copy, F8 to delete.",
+		local:    Panel{label: "LOCAL", cwd: localPath},
+		remote:   Panel{label: remoteLabel, cwd: remotePath, isRemote: true},
 	}
 }
 
@@ -153,13 +182,29 @@ type transferDoneMsg struct {
 }
 type progressClosedMsg struct{}
 
+// deleteDoneMsg reports the outcome of one item's deletion.
+type deleteDoneMsg struct {
+	err  error
+	name string
+}
+
 // --- commands ---
 
 func (m Model) loadPanel(which focus, p string, mode cursorMode, selName string) tea.Cmd {
-	ls := m.listerFor(which)
+	fs := m.fsFor(which)
 	return func() tea.Msg {
-		files, err := ls.List(p)
+		files, err := fs.List(p)
 		return panelLoadedMsg{which: which, path: p, files: files, err: err, mode: mode, selName: selName}
+	}
+}
+
+// deleteCmd removes one entry on the given side, reporting the outcome. The
+// context lets an in-flight remote delete be aborted along with the rest of the
+// batch.
+func deleteCmd(ctx context.Context, fs panelFS, full, name string) tea.Cmd {
+	return func() tea.Msg {
+		err := fs.Delete(ctx, full)
+		return deleteDoneMsg{err: err, name: name}
 	}
 }
 
@@ -246,6 +291,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.advanceJob(msg)
 
+	case deleteDoneMsg:
+		if m.mode != modeDeleting {
+			return m, nil
+		}
+		return m.advanceDelete(msg)
+
 	case progressClosedMsg:
 		return m, nil
 	}
@@ -278,6 +329,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfirmKey(msg)
 	case modeProgress:
 		return m.handleProgressKey(msg)
+	case modeConfirmDelete:
+		return m.handleConfirmDeleteKey(msg)
+	case modeDeleting:
+		return m.handleDeletingKey(msg)
 	}
 
 	switch {
@@ -321,6 +376,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keys.Copy):
 		return m.handleCopy()
+
+	case key.Matches(msg, m.keys.Delete):
+		return m.handleDelete()
 	}
 	return m, nil
 }
@@ -360,6 +418,45 @@ func (m Model) handleProgressKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !m.job.aborted && m.job.cancel != nil {
 			m.job.aborted = true
 			m.job.cancel()
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+// handleConfirmDeleteKey drives the confirm-before-delete dialog: Enter starts
+// the batch, Esc (or quit) backs out without deleting anything.
+func (m Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Enter):
+		ctx, cancel := context.WithCancel(context.Background())
+		m.del.ctx = ctx
+		m.del.cancel = cancel
+		m.del.index = 0
+		m.del.failed = 0
+		m.del.lastErr = nil
+		m.mode = modeDeleting
+		cmd := m.startDelete()
+		return m, cmd
+	case key.Matches(msg, m.keys.Cancel), key.Matches(msg, m.keys.Quit):
+		m.mode = modeBrowse
+		m.del = deleteJob{}
+		m.status = "Delete cancelled."
+		m.statusErr = false
+		return m, nil
+	}
+	return m, nil
+}
+
+// handleDeletingKey drives the in-progress delete dialog: Esc (or quit) aborts.
+// The abort cancels the context (killing an in-flight remote rm) and stops the
+// queue before the next item; entries already removed stay removed.
+func (m Model) handleDeletingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Cancel), key.Matches(msg, m.keys.Quit):
+		if !m.del.aborted && m.del.cancel != nil {
+			m.del.aborted = true
+			m.del.cancel()
 		}
 		return m, nil
 	}
@@ -413,6 +510,33 @@ func (m Model) handleCopy() (tea.Model, tea.Cmd) {
 		items:   items,
 	}
 	m.mode = modeConfirm
+	return m, nil
+}
+
+// handleDelete assembles a delete batch from the focused panel — the marked
+// entries, or the highlighted one if nothing is marked — and opens the confirm
+// dialog. No entry is removed until the user confirms.
+func (m Model) handleDelete() (tea.Model, tea.Cmd) {
+	src := m.focusedPanel()
+
+	var items []delItem
+	for _, f := range src.markedInfos() {
+		items = append(items, delItem{name: f.Name, isDir: f.IsDir})
+	}
+	if len(items) == 0 {
+		sel := src.selected()
+		if sel == nil || sel.Name == ".." {
+			return m, nil
+		}
+		items = []delItem{{name: sel.Name, isDir: sel.IsDir}}
+	}
+
+	m.del = deleteJob{
+		side:  m.focus,
+		dir:   src.cwd,
+		items: items,
+	}
+	m.mode = modeConfirmDelete
 	return m, nil
 }
 
@@ -471,6 +595,64 @@ func (m Model) finishJob() (tea.Model, tea.Cmd) {
 	return m, m.loadPanel(dest, destDir, cursorKeep, "")
 }
 
+// startDelete launches the deletion of the current job item. It reads
+// m.del.index, so the surrounding handler must have it set.
+func (m *Model) startDelete() tea.Cmd {
+	it := m.del.items[m.del.index]
+	full := joinPath(m.del.side, m.del.dir, it.name)
+	return deleteCmd(m.del.ctx, m.fsFor(m.del.side), full, it.name)
+}
+
+// advanceDelete records the outcome of the item that just finished and either
+// starts the next one or finishes the batch.
+func (m Model) advanceDelete(msg deleteDoneMsg) (tea.Model, tea.Cmd) {
+	if m.del.aborted {
+		return m.finishDelete()
+	}
+	if msg.err != nil {
+		m.del.failed++
+		m.del.lastErr = msg.err
+	}
+	m.del.index++
+	if m.del.index >= len(m.del.items) {
+		return m.finishDelete()
+	}
+	return m, m.startDelete()
+}
+
+// finishDelete ends the batch: it cancels the context, clears the panel's
+// marks, reports a summary, reloads the panel and returns to browsing.
+func (m Model) finishDelete() (tea.Model, tea.Cmd) {
+	done := m.del.index // items fully completed
+	total := len(m.del.items)
+	aborted := m.del.aborted
+	failed := m.del.failed
+	lastErr := m.del.lastErr
+	side := m.del.side
+	dir := m.del.dir
+
+	if m.del.cancel != nil {
+		m.del.cancel()
+	}
+	m.panelPtr(side).clearMarks()
+
+	m.mode = modeBrowse
+	m.del = deleteJob{}
+
+	switch {
+	case aborted:
+		m.status = fmt.Sprintf("Aborted — %d of %d deleted", done, total)
+		m.statusErr = true
+	case failed > 0:
+		m.status = fmt.Sprintf("Deleted %d of %d, %d failed: %v", total-failed, total, failed, lastErr)
+		m.statusErr = true
+	default:
+		m.status = fmt.Sprintf("Deleted %d item%s", total, plural(total))
+		m.statusErr = false
+	}
+	return m, m.loadPanel(side, dir, cursorKeep, "")
+}
+
 // --- view ---
 
 func (m Model) View() string {
@@ -487,6 +669,10 @@ func (m Model) View() string {
 		return overlay.Composite(m.confirmDialog().box(m.width), bg, overlay.Center, overlay.Center, 0, 0)
 	case modeProgress:
 		return overlay.Composite(m.progressDialog().box(m.width), bg, overlay.Center, overlay.Center, 0, 0)
+	case modeConfirmDelete:
+		return overlay.Composite(m.confirmDeleteDialog().box(m.width), bg, overlay.Center, overlay.Center, 0, 0)
+	case modeDeleting:
+		return overlay.Composite(m.deletingDialog().box(m.width), bg, overlay.Center, overlay.Center, 0, 0)
 	}
 	return bg
 }
@@ -558,8 +744,69 @@ func (m Model) progressDialog() dialog {
 	}
 }
 
+// confirmDeleteDialog is the "delete N items?" prompt shown before a batch
+// starts. It is styled as a destructive action and spells out that deletes are
+// recursive and irreversible.
+func (m Model) confirmDeleteDialog() dialog {
+	n := len(m.del.items)
+	files, dirs := 0, 0
+	for _, it := range m.del.items {
+		if it.isDir {
+			dirs++
+		} else {
+			files++
+		}
+	}
+
+	var what string
+	if n == 1 {
+		what = m.del.items[0].name
+		if m.del.items[0].isDir {
+			what += "/"
+		}
+	} else {
+		what = countPhrase(files, dirs)
+	}
+
+	return dialog{
+		title: fmt.Sprintf("Delete %d item%s?", n, plural(n)),
+		body: []string{
+			what,
+			"from " + m.panelPtr(m.del.side).label + ": " + m.del.dir,
+			"Directories are removed recursively. This cannot be undone.",
+		},
+		footer: "[ Enter ] Delete    [ Esc ] Cancel",
+		danger: true,
+	}
+}
+
+// deletingDialog reports the running delete batch and offers the abort key.
+func (m Model) deletingDialog() dialog {
+	n := len(m.del.items)
+	it := m.del.items[m.del.index]
+	name := it.name
+	if it.isDir {
+		name += "/"
+	}
+
+	title := "Deleting…"
+	if m.del.aborted {
+		title = "Aborting…"
+	}
+
+	return dialog{
+		title: title,
+		body: []string{
+			fmt.Sprintf("Item %d of %d: %s", m.del.index+1, n, name),
+			"from " + m.panelPtr(m.del.side).label + ": " + m.del.dir,
+		},
+		footer: "[ Esc ] Abort",
+		danger: true,
+	}
+}
+
 func (m Model) footer() string {
-	help := helpStyle.Render("Tab switch  ↑↓ move  ⏎ open  Space mark  F5 copy  r refresh  q quit")
+	help := helpStyle.Render("Tab switch  ↑↓ move  ⏎ open  Space mark  F5 copy  F8 del  r refresh  q quit")
 	st := statusStyle
 	if m.statusErr {
 		st = errorStyle
@@ -616,11 +863,11 @@ func (m *Model) panelPtr(which focus) *Panel {
 
 func (m *Model) focusedPanel() *Panel { return m.panelPtr(m.focus) }
 
-func (m Model) listerFor(which focus) lister {
+func (m Model) fsFor(which focus) panelFS {
 	if which == focusLocal {
-		return m.localList
+		return m.localFS
 	}
-	return m.remoteList
+	return m.remoteFS
 }
 
 func indexOf(files []file.Info, name string) int {
