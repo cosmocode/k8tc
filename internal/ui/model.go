@@ -59,39 +59,79 @@ const (
 	modeDeleting                    // delete-in-progress dialog (with abort)
 )
 
-// copyItem is one entry queued for copying.
-type copyItem struct {
+// item is one entry queued for a batch operation. size is the source size, used
+// to report copy progress; deletion ignores it.
+type item struct {
 	name  string
 	isDir bool
 	size  int64
+}
+
+// batch is the shared state of an abortable, sequential batch operation (copy
+// or delete): the queue and the bookkeeping for working through it one item at
+// a time. ctx/cancel let the in-flight item be aborted along with the rest of
+// the queue, and aborted records that the user asked to stop. index is the item
+// currently being processed (0-based); failed counts items that errored (an
+// abort is not a failure) and lastErr is the most recent error, for the summary.
+type batch struct {
+	items []item
+
+	index   int
+	failed  int
+	lastErr error
+
+	ctx     context.Context
+	cancel  context.CancelFunc
+	aborted bool
+}
+
+// begin readies a confirmed batch to run: a fresh cancelable context and zeroed
+// counters.
+func (b *batch) begin() {
+	b.ctx, b.cancel = context.WithCancel(context.Background())
+	b.index = 0
+	b.failed = 0
+	b.lastErr = nil
+}
+
+// requestAbort marks the batch aborted and cancels its context, killing the
+// in-flight item (e.g. a remote tar/rm) so the queue can tear down. It is a
+// no-op once already aborted.
+func (b *batch) requestAbort() {
+	if !b.aborted && b.cancel != nil {
+		b.aborted = true
+		b.cancel()
+	}
+}
+
+// recordResult tallies the item that just finished and advances the index,
+// returning true when the batch is complete. An aborted batch is complete at
+// once and the aborting error is not counted as a failure.
+func (b *batch) recordResult(err error) (done bool) {
+	if b.aborted {
+		return true
+	}
+	if err != nil {
+		b.failed++
+		b.lastErr = err
+	}
+	b.index++
+	return b.index >= len(b.items)
 }
 
 // copyJob is a batch of items copied from one panel's directory into the
 // other's. Items are transferred one at a time; the dialog reports progress and
 // canceling ctx aborts the whole batch.
 type copyJob struct {
+	batch
 	src     focus  // panel the items come from
 	dest    focus  // panel they go to
 	srcDir  string // source directory (src panel's cwd)
 	destDir string // destination directory (dest panel's cwd)
-	items   []copyItem
 
-	index     int   // item currently transferring (0-based)
-	curBytes  int64 // bytes streamed for the current item
-	doneBytes int64 // bytes streamed for already-completed items
-	failed    int   // items that errored (abort excluded)
-	lastErr   error // most recent item error, for the summary
-
-	ctx        context.Context
-	cancel     context.CancelFunc
-	aborted    bool
+	curBytes   int64      // bytes streamed for the current item
+	doneBytes  int64      // bytes streamed for already-completed items
 	progressCh chan int64 // progress channel for the current item
-}
-
-// delItem is one entry queued for deletion.
-type delItem struct {
-	name  string
-	isDir bool
 }
 
 // deleteJob is a batch of entries being removed from one panel's directory.
@@ -99,17 +139,9 @@ type delItem struct {
 // ctx aborts the remaining items. Already-deleted entries are gone for good —
 // an abort stops the queue, it does not roll back.
 type deleteJob struct {
-	side  focus  // panel the items are deleted from
-	dir   string // directory they live in (side panel's cwd)
-	items []delItem
-
-	index   int   // item currently deleting (0-based)
-	failed  int   // items that errored (abort excluded)
-	lastErr error // most recent item error, for the summary
-
-	ctx     context.Context
-	cancel  context.CancelFunc
-	aborted bool
+	batch
+	side focus  // panel the items are deleted from
+	dir  string // directory they live in (side panel's cwd)
 }
 
 // Model is the Bubble Tea root model.
@@ -306,17 +338,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // advanceJob records the outcome of the item that just finished and either
 // starts the next one or finishes the batch.
 func (m Model) advanceJob(msg transferDoneMsg) (tea.Model, tea.Cmd) {
-	if m.job.aborted {
-		return m.finishJob()
+	done := m.job.recordResult(msg.err)
+	if !m.job.aborted {
+		m.job.doneBytes += m.job.curBytes
+		m.job.curBytes = 0
 	}
-	if msg.err != nil {
-		m.job.failed++
-		m.job.lastErr = msg.err
-	}
-	m.job.doneBytes += m.job.curBytes
-	m.job.curBytes = 0
-	m.job.index++
-	if m.job.index >= len(m.job.items) {
+	if done {
 		return m.finishJob()
 	}
 	cmd := m.startItem()
@@ -388,14 +415,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Enter):
-		ctx, cancel := context.WithCancel(context.Background())
-		m.job.ctx = ctx
-		m.job.cancel = cancel
-		m.job.index = 0
+		m.job.begin()
 		m.job.curBytes = 0
 		m.job.doneBytes = 0
-		m.job.failed = 0
-		m.job.lastErr = nil
 		m.mode = modeProgress
 		cmd := m.startItem()
 		return m, cmd
@@ -415,10 +437,7 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleProgressKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Cancel), key.Matches(msg, m.keys.Quit):
-		if !m.job.aborted && m.job.cancel != nil {
-			m.job.aborted = true
-			m.job.cancel()
-		}
+		m.job.requestAbort()
 		return m, nil
 	}
 	return m, nil
@@ -429,12 +448,7 @@ func (m Model) handleProgressKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Enter):
-		ctx, cancel := context.WithCancel(context.Background())
-		m.del.ctx = ctx
-		m.del.cancel = cancel
-		m.del.index = 0
-		m.del.failed = 0
-		m.del.lastErr = nil
+		m.del.begin()
 		m.mode = modeDeleting
 		cmd := m.startDelete()
 		return m, cmd
@@ -454,10 +468,7 @@ func (m Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleDeletingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Cancel), key.Matches(msg, m.keys.Quit):
-		if !m.del.aborted && m.del.cancel != nil {
-			m.del.aborted = true
-			m.del.cancel()
-		}
+		m.del.requestAbort()
 		return m, nil
 	}
 	return m, nil
@@ -480,22 +491,32 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 	return m, m.loadPanel(m.focus, child, cursorReset, "")
 }
 
+// gatherBatch collects the entries a batch operation should act on: the panel's
+// marked entries, or its highlighted one if nothing is marked. It returns nil
+// when there is nothing actionable (an empty panel, or only ".." selected).
+func gatherBatch(p *Panel) []item {
+	var items []item
+	for _, f := range p.markedInfos() {
+		items = append(items, item{name: f.Name, isDir: f.IsDir, size: f.Size})
+	}
+	if len(items) == 0 {
+		sel := p.selected()
+		if sel == nil || sel.Name == ".." {
+			return nil
+		}
+		items = []item{{name: sel.Name, isDir: sel.IsDir, size: sel.Size}}
+	}
+	return items
+}
+
 // handleCopy assembles a copy batch from the focused panel — the marked
 // entries, or the highlighted one if nothing is marked — and opens the confirm
 // dialog. No transfer starts until the user confirms.
 func (m Model) handleCopy() (tea.Model, tea.Cmd) {
 	src := m.focusedPanel()
-
-	var items []copyItem
-	for _, f := range src.markedInfos() {
-		items = append(items, copyItem{name: f.Name, isDir: f.IsDir, size: f.Size})
-	}
-	if len(items) == 0 {
-		sel := src.selected()
-		if sel == nil || sel.Name == ".." {
-			return m, nil
-		}
-		items = []copyItem{{name: sel.Name, isDir: sel.IsDir, size: sel.Size}}
+	items := gatherBatch(src)
+	if items == nil {
+		return m, nil
 	}
 
 	dest := focusRemote
@@ -503,11 +524,11 @@ func (m Model) handleCopy() (tea.Model, tea.Cmd) {
 		dest = focusLocal
 	}
 	m.job = copyJob{
+		batch:   batch{items: items},
 		src:     m.focus,
 		dest:    dest,
 		srcDir:  src.cwd,
 		destDir: m.panelPtr(dest).cwd,
-		items:   items,
 	}
 	m.mode = modeConfirm
 	return m, nil
@@ -518,23 +539,15 @@ func (m Model) handleCopy() (tea.Model, tea.Cmd) {
 // dialog. No entry is removed until the user confirms.
 func (m Model) handleDelete() (tea.Model, tea.Cmd) {
 	src := m.focusedPanel()
-
-	var items []delItem
-	for _, f := range src.markedInfos() {
-		items = append(items, delItem{name: f.Name, isDir: f.IsDir})
-	}
-	if len(items) == 0 {
-		sel := src.selected()
-		if sel == nil || sel.Name == ".." {
-			return m, nil
-		}
-		items = []delItem{{name: sel.Name, isDir: sel.IsDir}}
+	items := gatherBatch(src)
+	if items == nil {
+		return m, nil
 	}
 
 	m.del = deleteJob{
+		batch: batch{items: items},
 		side:  m.focus,
 		dir:   src.cwd,
-		items: items,
 	}
 	m.mode = modeConfirmDelete
 	return m, nil
@@ -606,15 +619,7 @@ func (m *Model) startDelete() tea.Cmd {
 // advanceDelete records the outcome of the item that just finished and either
 // starts the next one or finishes the batch.
 func (m Model) advanceDelete(msg deleteDoneMsg) (tea.Model, tea.Cmd) {
-	if m.del.aborted {
-		return m.finishDelete()
-	}
-	if msg.err != nil {
-		m.del.failed++
-		m.del.lastErr = msg.err
-	}
-	m.del.index++
-	if m.del.index >= len(m.del.items) {
+	if m.del.recordResult(msg.err) {
 		return m.finishDelete()
 	}
 	return m, m.startDelete()
@@ -687,32 +692,35 @@ func (m Model) browseView() string {
 	return lipgloss.JoinVertical(lipgloss.Left, panels, m.footer())
 }
 
-// confirmDialog is the "copy N items?" prompt shown before a batch starts.
-func (m Model) confirmDialog() dialog {
-	n := len(m.job.items)
+// whatPhrase describes a batch for a confirm dialog: the lone entry's name
+// (directories get a trailing slash) when there's just one, otherwise a
+// "2 files, 1 directory" summary.
+func whatPhrase(items []item) string {
+	if len(items) == 1 {
+		what := items[0].name
+		if items[0].isDir {
+			what += "/"
+		}
+		return what
+	}
 	files, dirs := 0, 0
-	for _, it := range m.job.items {
+	for _, it := range items {
 		if it.isDir {
 			dirs++
 		} else {
 			files++
 		}
 	}
+	return countPhrase(files, dirs)
+}
 
-	var what string
-	if n == 1 {
-		what = m.job.items[0].name
-		if m.job.items[0].isDir {
-			what += "/"
-		}
-	} else {
-		what = countPhrase(files, dirs)
-	}
-
+// confirmDialog is the "copy N items?" prompt shown before a batch starts.
+func (m Model) confirmDialog() dialog {
+	n := len(m.job.items)
 	return dialog{
 		title: fmt.Sprintf("Copy %d item%s?", n, plural(n)),
 		body: []string{
-			what,
+			whatPhrase(m.job.items),
 			"→ " + m.panelPtr(m.job.dest).label + ": " + m.job.destDir,
 		},
 		footer: "[ Enter ] Copy    [ Esc ] Cancel",
@@ -749,29 +757,10 @@ func (m Model) progressDialog() dialog {
 // recursive and irreversible.
 func (m Model) confirmDeleteDialog() dialog {
 	n := len(m.del.items)
-	files, dirs := 0, 0
-	for _, it := range m.del.items {
-		if it.isDir {
-			dirs++
-		} else {
-			files++
-		}
-	}
-
-	var what string
-	if n == 1 {
-		what = m.del.items[0].name
-		if m.del.items[0].isDir {
-			what += "/"
-		}
-	} else {
-		what = countPhrase(files, dirs)
-	}
-
 	return dialog{
 		title: fmt.Sprintf("Delete %d item%s?", n, plural(n)),
 		body: []string{
-			what,
+			whatPhrase(m.del.items),
 			"from " + m.panelPtr(m.del.side).label + ": " + m.del.dir,
 			"Directories are removed recursively. This cannot be undone.",
 		},
