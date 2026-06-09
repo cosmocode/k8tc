@@ -83,3 +83,22 @@ func TestListerDelete(t *testing.T) {
 		t.Errorf("dir still present after recursive Delete: %v", err)
 	}
 }
+
+func TestListerMkdir(t *testing.T) {
+	if _, err := exec.LookPath("mkdir"); err != nil {
+		t.Skip("mkdir not available")
+	}
+	l := &Lister{Client: &kube.Client{Bin: fakeKubectl(t), Pod: "pod"}}
+	dir := filepath.Join(t.TempDir(), "newdir")
+
+	if err := l.Mkdir(context.Background(), dir); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		t.Errorf("expected created directory, stat err=%v", err)
+	}
+	// A second mkdir over the same path must surface the failure (no `-p`).
+	if err := l.Mkdir(context.Background(), dir); err == nil {
+		t.Errorf("re-creating an existing directory should error")
+	}
+}

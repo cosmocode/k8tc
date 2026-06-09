@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/cosmocode/k8tc/internal/file"
@@ -15,12 +16,13 @@ import (
 )
 
 // panelFS is one side of the view (local disk or a pod) as the model sees it:
-// something it can list and delete entries on. Both internal/local and
-// internal/remote satisfy it, which is what lets a panel load and mutate itself
-// without the model knowing which side it is.
+// something it can list, delete entries on, and create directories in. Both
+// internal/local and internal/remote satisfy it, which is what lets a panel
+// load and mutate itself without the model knowing which side it is.
 type panelFS interface {
 	List(path string) ([]file.Info, error)
 	Delete(ctx context.Context, path string) error
+	Mkdir(ctx context.Context, path string) error
 }
 
 // transferer moves a file or directory tree between local disk and the pod.
@@ -57,6 +59,7 @@ const (
 	modeProgress                    // copy-in-progress dialog (with abort)
 	modeConfirmDelete               // confirm-before-delete dialog
 	modeDeleting                    // delete-in-progress dialog (with abort)
+	modeMkdir                       // new-folder text prompt
 )
 
 // item is one entry queued for a batch operation. size is the source size, used
@@ -144,6 +147,15 @@ type deleteJob struct {
 	dir  string // directory they live in (side panel's cwd)
 }
 
+// mkdirState is the new-folder prompt. Unlike copy and delete it is not a batch:
+// there is no item queue, no sequential loop and nothing to abort — just the
+// panel and directory the folder lands in and a text input collecting its name.
+type mkdirState struct {
+	side  focus  // panel the folder is created in
+	dir   string // directory it lands in (side panel's cwd)
+	input textinput.Model
+}
+
 // Model is the Bubble Tea root model.
 type Model struct {
 	localFS  panelFS
@@ -159,9 +171,10 @@ type Model struct {
 	status    string
 	statusErr bool
 
-	mode uiMode
-	job  copyJob
-	del  deleteJob
+	mode  uiMode
+	job   copyJob
+	del   deleteJob
+	mkdir mkdirState
 
 	keys     keyMap
 	quitting bool
@@ -220,6 +233,16 @@ type deleteDoneMsg struct {
 	name string
 }
 
+// mkdirDoneMsg reports the outcome of a directory creation. It echoes back the
+// side and dir so the handler can reload the right panel and land the cursor on
+// the new entry — the prompt state is already gone by the time it arrives.
+type mkdirDoneMsg struct {
+	err  error
+	name string
+	side focus
+	dir  string
+}
+
 // --- commands ---
 
 func (m Model) loadPanel(which focus, p string, mode cursorMode, selName string) tea.Cmd {
@@ -237,6 +260,16 @@ func deleteCmd(ctx context.Context, fs panelFS, full, name string) tea.Cmd {
 	return func() tea.Msg {
 		err := fs.Delete(ctx, full)
 		return deleteDoneMsg{err: err, name: name}
+	}
+}
+
+// mkdirCmd creates one directory on the given side, reporting the outcome. mkdir
+// is a one-shot, so there is no cancelable context to thread through; side and
+// dir are echoed back for the panel reload.
+func mkdirCmd(fs panelFS, full, name string, side focus, dir string) tea.Cmd {
+	return func() tea.Msg {
+		err := fs.Mkdir(context.Background(), full)
+		return mkdirDoneMsg{err: err, name: name, side: side, dir: dir}
 	}
 }
 
@@ -329,8 +362,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.advanceDelete(msg)
 
+	case mkdirDoneMsg:
+		if msg.err != nil {
+			m.status = "mkdir failed: " + msg.err.Error()
+			m.statusErr = true
+			return m, nil
+		}
+		m.status = "Created " + msg.name + "/"
+		m.statusErr = false
+		// Reload the panel and land the cursor on the new directory.
+		return m, m.loadPanel(msg.side, msg.dir, cursorSelect, msg.name)
+
 	case progressClosedMsg:
 		return m, nil
+	}
+	// While the new-folder prompt is open, hand anything we don't handle here
+	// (notably the text input's own cursor-blink ticks) to the input.
+	if m.mode == modeMkdir {
+		var cmd tea.Cmd
+		m.mkdir.input, cmd = m.mkdir.input.Update(msg)
+		return m, cmd
 	}
 	return m, nil
 }
@@ -360,6 +411,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfirmDeleteKey(msg)
 	case modeDeleting:
 		return m.handleDeletingKey(msg)
+	case modeMkdir:
+		return m.handleMkdirKey(msg)
 	}
 
 	switch {
@@ -406,6 +459,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keys.Delete):
 		return m.handleDelete()
+
+	case key.Matches(msg, m.keys.Mkdir):
+		return m.handleMkdir()
 	}
 	return m, nil
 }
@@ -553,6 +609,54 @@ func (m Model) handleDelete() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleMkdir opens the new-folder prompt for the focused panel's current
+// directory. Nothing is created until the user types a name and confirms.
+func (m Model) handleMkdir() (tea.Model, tea.Cmd) {
+	p := m.focusedPanel()
+	ti := textinput.New()
+	ti.Placeholder = "name"
+	ti.CharLimit = 255
+	ti.Width = 32
+	cmd := ti.Focus()
+	m.mkdir = mkdirState{side: m.focus, dir: p.cwd, input: ti}
+	m.mode = modeMkdir
+	return m, cmd
+}
+
+// handleMkdirKey drives the new-folder prompt: Enter creates the directory and
+// returns to browsing (mkdir is a one-shot, so there is no progress dialog),
+// Esc backs out, Ctrl+C still quits. Every other key edits the name field — so
+// unlike the batch handlers this must not treat the Quit binding as cancel,
+// otherwise "q" could never appear in a folder name.
+func (m Model) handleMkdirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case msg.Type == tea.KeyCtrlC:
+		m.quitting = true
+		return m, tea.Quit
+	case key.Matches(msg, m.keys.Cancel):
+		m.mode = modeBrowse
+		m.mkdir = mkdirState{}
+		m.status = "New folder cancelled."
+		m.statusErr = false
+		return m, nil
+	case key.Matches(msg, m.keys.Enter):
+		name := strings.TrimSpace(m.mkdir.input.Value())
+		if name == "" {
+			return m, nil // nothing to create; keep the prompt open
+		}
+		side, dir := m.mkdir.side, m.mkdir.dir
+		full := joinPath(side, dir, name)
+		m.mode = modeBrowse
+		m.mkdir = mkdirState{}
+		m.status = "Creating " + name + "…"
+		m.statusErr = false
+		return m, mkdirCmd(m.fsFor(side), full, name, side, dir)
+	}
+	var cmd tea.Cmd
+	m.mkdir.input, cmd = m.mkdir.input.Update(msg)
+	return m, cmd
+}
+
 // startItem launches the transfer for the current job item and the listener
 // that pumps its progress. It must run before the surrounding handler returns
 // the model, since it records the item's progress channel on m.job.
@@ -678,6 +782,8 @@ func (m Model) View() string {
 		return overlay.Composite(m.confirmDeleteDialog().box(m.width), bg, overlay.Center, overlay.Center, 0, 0)
 	case modeDeleting:
 		return overlay.Composite(m.deletingDialog().box(m.width), bg, overlay.Center, overlay.Center, 0, 0)
+	case modeMkdir:
+		return overlay.Composite(m.mkdirDialog().box(m.width), bg, overlay.Center, overlay.Center, 0, 0)
 	}
 	return bg
 }
@@ -794,8 +900,21 @@ func (m Model) deletingDialog() dialog {
 	}
 }
 
+// mkdirDialog is the new-folder prompt: the target directory and the text input
+// for the name, rendered inside the same bordered box the other dialogs use.
+func (m Model) mkdirDialog() dialog {
+	return dialog{
+		title: "New folder",
+		body: []string{
+			"in " + m.panelPtr(m.mkdir.side).label + ": " + m.mkdir.dir,
+			m.mkdir.input.View(),
+		},
+		footer: "[ Enter ] Create    [ Esc ] Cancel",
+	}
+}
+
 func (m Model) footer() string {
-	help := helpStyle.Render("Tab switch  ↑↓ move  ⏎ open  Space mark  F5 copy  F8 del  r refresh  q quit")
+	help := helpStyle.Render("Tab switch  ↑↓ move  ⏎ open  Space mark  F5 copy  F7 mkdir  F8 del  r refresh  q quit")
 	st := statusStyle
 	if m.statusErr {
 		st = errorStyle

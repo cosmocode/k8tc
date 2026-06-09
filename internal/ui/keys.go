@@ -13,6 +13,7 @@ type keyMap struct {
 	Mark    key.Binding
 	Copy    key.Binding
 	Delete  key.Binding
+	Mkdir   key.Binding
 	Refresh key.Binding
 	Cancel  key.Binding
 	Quit    key.Binding
@@ -29,6 +30,7 @@ func defaultKeys() keyMap {
 		Mark:    key.NewBinding(key.WithKeys(" ", "insert")),
 		Copy:    key.NewBinding(key.WithKeys("f5", "c")),
 		Delete:  key.NewBinding(key.WithKeys("f8", "d")),
+		Mkdir:   key.NewBinding(key.WithKeys("f7", "m")),
 		Refresh: key.NewBinding(key.WithKeys("r")),
 		Cancel:  key.NewBinding(key.WithKeys("esc")),
 		Quit:    key.NewBinding(key.WithKeys("q", "ctrl+c")),

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ type fakeBackend struct{}
 
 func (fakeBackend) List(string) ([]file.Info, error)                        { return nil, nil }
 func (fakeBackend) Delete(context.Context, string) error                    { return nil }
+func (fakeBackend) Mkdir(context.Context, string) error                     { return nil }
 func (fakeBackend) Pull(context.Context, string, string, func(int64)) error { return nil }
 func (fakeBackend) Push(context.Context, string, string, func(int64)) error { return nil }
 
@@ -436,6 +438,112 @@ func TestDeleteConfirmDialogIsDanger(t *testing.T) {
 	}
 	if !strings.Contains(view, "LOCAL") {
 		t.Errorf("panels hidden behind delete dialog; want them composited underneath")
+	}
+}
+
+func TestMkdirPromptOpensAndCreates(t *testing.T) {
+	m := sampleModel(t, 80, 24)
+
+	// F7 opens the new-folder prompt, targeting the focused panel's cwd.
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyF7})
+	m = next.(Model)
+	if m.mode != modeMkdir {
+		t.Fatalf("mode = %v, want mkdir", m.mode)
+	}
+	if m.mkdir.side != focusLocal || m.mkdir.dir != "/home/user" {
+		t.Fatalf("mkdir target = %v %q, want local /home/user", m.mkdir.side, m.mkdir.dir)
+	}
+
+	// Typing edits the name field; nothing is created yet.
+	for _, r := range "newdir" {
+		next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = next.(Model)
+	}
+	if got := m.mkdir.input.Value(); got != "newdir" {
+		t.Fatalf("input value = %q, want newdir", got)
+	}
+
+	// Enter fires the create command and returns to browsing immediately —
+	// mkdir has no progress dialog.
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if m.mode != modeBrowse {
+		t.Fatalf("after Enter mode = %v, want browse", m.mode)
+	}
+	if cmd == nil {
+		t.Fatalf("Enter produced no mkdir command")
+	}
+
+	// The create reports success → status reflects it.
+	next, _ = m.Update(mkdirDoneMsg{name: "newdir", side: focusLocal, dir: "/home/user"})
+	m = next.(Model)
+	if m.statusErr || !strings.Contains(m.status, "Created newdir") {
+		t.Errorf("status = %q (err=%v), want a 'Created newdir' summary", m.status, m.statusErr)
+	}
+}
+
+func TestMkdirEscCancels(t *testing.T) {
+	m := sampleModel(t, 80, 24)
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyF7})
+	m = next.(Model)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+	if m.mode != modeBrowse {
+		t.Errorf("Esc left mode = %v, want browse", m.mode)
+	}
+	if cmd != nil {
+		t.Errorf("cancelling produced a command")
+	}
+}
+
+func TestMkdirEmptyNameStaysOpen(t *testing.T) {
+	m := sampleModel(t, 80, 24)
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyF7})
+	m = next.(Model)
+
+	// Enter with an empty field must not create anything or close the prompt.
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if m.mode != modeMkdir {
+		t.Errorf("Enter on empty name left mode = %v, want still mkdir", m.mode)
+	}
+	if cmd != nil {
+		t.Errorf("empty-name Enter produced a command")
+	}
+}
+
+func TestMkdirReportsFailure(t *testing.T) {
+	m := sampleModel(t, 80, 24)
+	next, _ := m.Update(mkdirDoneMsg{err: errors.New("File exists"), name: "newdir", side: focusLocal, dir: "/home/user"})
+	m = next.(Model)
+	if !m.statusErr || !strings.Contains(m.status, "mkdir failed") {
+		t.Errorf("status = %q (err=%v), want a failure summary", m.status, m.statusErr)
+	}
+}
+
+func TestMkdirDialogOverlaysPanels(t *testing.T) {
+	const w, h = 80, 24
+	m := sampleModel(t, w, h)
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyF7})
+	m = next.(Model)
+
+	// The text input embedded in the dialog must not break the frame's geometry.
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) != h {
+		t.Fatalf("overlaid view has %d lines, want %d", len(lines), h)
+	}
+	for i, line := range lines {
+		if got := lipgloss.Width(line); got != w {
+			t.Errorf("line %d width = %d, want %d", i, got, w)
+		}
+	}
+	if !strings.Contains(view, "New folder") {
+		t.Errorf("mkdir dialog not visible in overlaid view")
+	}
+	if !strings.Contains(view, "LOCAL") {
+		t.Errorf("panels hidden behind mkdir dialog; want them composited underneath")
 	}
 }
 

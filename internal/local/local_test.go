@@ -74,6 +74,27 @@ func TestDelete(t *testing.T) {
 	}
 }
 
+func TestMkdir(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "newdir")
+
+	if err := (FS{}).Mkdir(context.Background(), sub); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if fi, err := os.Stat(sub); err != nil || !fi.IsDir() {
+		t.Errorf("expected created directory, stat err=%v", err)
+	}
+
+	// A single-level mkdir does not create intermediate parents, and fails on
+	// an existing path — both surface as errors rather than silent success.
+	if err := (FS{}).Mkdir(context.Background(), sub); err == nil {
+		t.Errorf("re-creating an existing directory should error")
+	}
+	if err := (FS{}).Mkdir(context.Background(), filepath.Join(dir, "a", "b")); err == nil {
+		t.Errorf("Mkdir with a missing parent should error")
+	}
+}
+
 func TestListRootNoDotDot(t *testing.T) {
 	files, err := List("/")
 	if err != nil {

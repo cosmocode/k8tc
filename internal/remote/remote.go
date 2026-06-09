@@ -41,7 +41,21 @@ func (l *Lister) List(p string) ([]file.Info, error) {
 // dash. Canceling ctx kills the kubectl process, which is how an in-flight
 // delete is aborted.
 func (l *Lister) Delete(ctx context.Context, p string) error {
-	cmd := l.Client.ExecContext(ctx, false, "rm", "-rf", "--", p)
+	return l.run(ctx, "rm", "-rf", "--", p)
+}
+
+// Mkdir creates a single directory at p inside the pod by running
+// `mkdir -- <p>` (no `-p`), so it errors if p already exists or its parent does
+// not. The `--` guards names that begin with a dash. Canceling ctx kills the
+// kubectl process.
+func (l *Lister) Mkdir(ctx context.Context, p string) error {
+	return l.run(ctx, "mkdir", "--", p)
+}
+
+// run executes a pod command whose stdout we don't need, surfacing a trimmed
+// stderr message on failure. Canceling ctx kills the kubectl process.
+func (l *Lister) run(ctx context.Context, args ...string) error {
+	cmd := l.Client.ExecContext(ctx, false, args...)
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {
