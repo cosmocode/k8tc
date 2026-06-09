@@ -1,6 +1,10 @@
-package transfer
+package remote
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/cosmocode/k8tc/internal/file"
+)
 
 func TestParseLSFullTime(t *testing.T) {
 	out := `total 12
@@ -34,7 +38,7 @@ lrwxrwxrwx 1 root root    7 2024-01-15 10:30:00.000000000 +0000 link -> target
 	}
 
 	// Sizes and a parsed timestamp.
-	var fileTxt FileInfo
+	var fileTxt file.Info
 	for _, f := range files {
 		if f.Name == "file.txt" {
 			fileTxt = f
@@ -91,31 +95,3 @@ drwxr-xr-x 2 root root 4096 2024-01-15 10:30:00.000000000 +0000 etc
 		t.Fatalf("got %+v, want just [etc]", files)
 	}
 }
-
-func TestClassifyMissingTar(t *testing.T) {
-	cases := []string{
-		`OCI runtime exec failed: exec failed: unable to start container process: exec: "tar": executable file not found in $PATH: unknown`,
-		`sh: tar: not found`,
-		`tar: command not found`,
-	}
-	for _, stderr := range cases {
-		err := classify(errExit{}, stderr)
-		if err == nil || err.Error() != "pod has no `tar`; cannot transfer" {
-			t.Errorf("classify(%q) = %v, want missing-tar message", stderr, err)
-		}
-	}
-}
-
-func TestClassifyOtherError(t *testing.T) {
-	err := classify(errExit{}, "tar: /root/secret: Cannot open: Permission denied")
-	if err == nil {
-		t.Fatal("expected an error")
-	}
-	if got := err.Error(); got == "pod has no `tar`; cannot transfer" {
-		t.Errorf("permission error misclassified as missing tar")
-	}
-}
-
-type errExit struct{}
-
-func (errExit) Error() string { return "exit status 2" }

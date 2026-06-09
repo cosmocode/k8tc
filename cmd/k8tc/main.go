@@ -11,6 +11,9 @@ import (
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/cosmocode/k8tc/internal/kube"
+	"github.com/cosmocode/k8tc/internal/local"
+	"github.com/cosmocode/k8tc/internal/remote"
 	"github.com/cosmocode/k8tc/internal/transfer"
 	"github.com/cosmocode/k8tc/internal/ui"
 )
@@ -53,8 +56,17 @@ func main() {
 		localPath = abs
 	}
 
-	t := &transfer.Kubectl{Namespace: namespace, PreserveOwnership: preserve}
-	model := ui.New(t, pod, container, remotePath, localPath)
+	// One kube.Client (pod/container bound for the session) backs both the
+	// remote directory lister and the transfer manager.
+	client := &kube.Client{Namespace: namespace, Pod: pod, Container: container}
+	remoteLister := &remote.Lister{Client: client}
+	xfer := &transfer.Manager{Client: client, PreserveOwnership: preserve}
+
+	remoteLabel := "POD " + pod
+	if container != "" {
+		remoteLabel += " [" + container + "]"
+	}
+	model := ui.New(local.FS{}, remoteLister, xfer, remoteLabel, remotePath, localPath)
 
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {

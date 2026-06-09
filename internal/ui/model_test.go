@@ -7,21 +7,24 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/cosmocode/k8tc/internal/transfer"
+	"github.com/cosmocode/k8tc/internal/file"
 )
 
-type fakeTransfer struct{}
+// fakeBackend satisfies both the lister and transferer interfaces, standing in
+// for the local FS, the remote lister, and the transfer manager at once.
+type fakeBackend struct{}
 
-func (fakeTransfer) List(_, _, _ string) ([]transfer.FileInfo, error) { return nil, nil }
-func (fakeTransfer) Pull(_, _, _, _ string, _ func(int64)) error      { return nil }
-func (fakeTransfer) Push(_, _, _, _ string, _ func(int64)) error      { return nil }
+func (fakeBackend) List(string) ([]file.Info, error)      { return nil, nil }
+func (fakeBackend) Pull(_, _ string, _ func(int64)) error { return nil }
+func (fakeBackend) Push(_, _ string, _ func(int64)) error { return nil }
 
 func sampleModel(t *testing.T, w, h int) Model {
 	t.Helper()
-	m := New(fakeTransfer{}, "nginx-abc", "", "/var/www", "/home/user")
+	b := fakeBackend{}
+	m := New(b, b, b, "POD nginx-abc", "/var/www", "/home/user")
 	next, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	m = next.(Model)
-	files := []transfer.FileInfo{
+	files := []file.Info{
 		{Name: "..", IsDir: true},
 		{Name: "assets", IsDir: true},
 		{Name: "index.html", Size: 1234},

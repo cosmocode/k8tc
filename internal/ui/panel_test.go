@@ -5,7 +5,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/cosmocode/k8tc/internal/transfer"
+	"github.com/cosmocode/k8tc/internal/file"
 )
 
 func TestHumanSize(t *testing.T) {
@@ -31,7 +31,7 @@ func TestFormatRowWidth(t *testing.T) {
 	// A row must always render to exactly the panel width so highlighting and
 	// borders line up, even with long names or unicode.
 	for _, width := range []int{10, 20, 40} {
-		for _, f := range []transfer.FileInfo{
+		for _, f := range []file.Info{
 			{Name: "short.txt", Size: 12},
 			{Name: "a-very-long-file-name-that-overflows-the-panel.tar.gz", Size: 999999},
 			{Name: "dir", IsDir: true},

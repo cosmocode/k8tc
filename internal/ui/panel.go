@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/cosmocode/k8tc/internal/transfer"
+	"github.com/cosmocode/k8tc/internal/file"
 )
 
 // Panel is one side of the two-panel view. It owns its own cwd, file list,
@@ -15,7 +15,7 @@ import (
 type Panel struct {
 	label    string // "LOCAL" or "POD nginx-abc"
 	cwd      string
-	files    []transfer.FileInfo
+	files    []file.Info
 	cursor   int
 	offset   int
 	isRemote bool
@@ -25,7 +25,7 @@ type Panel struct {
 	innerRows int // file rows visible (height - 1)
 }
 
-func (p *Panel) selected() *transfer.FileInfo {
+func (p *Panel) selected() *file.Info {
 	if p.cursor < 0 || p.cursor >= len(p.files) {
 		return nil
 	}
@@ -103,7 +103,7 @@ func (p *Panel) render(focused bool) string {
 // formatRow lays out one entry: name on the left (dirs get a trailing "/"),
 // human-readable size right-aligned for files. The result is exactly width
 // display cells wide so row highlighting fills the panel.
-func formatRow(f transfer.FileInfo, width int) string {
+func formatRow(f file.Info, width int) string {
 	if width <= 2 {
 		return strings.Repeat(" ", max(0, width))
 	}

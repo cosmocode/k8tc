@@ -1,22 +1,30 @@
-// Package local browses the local filesystem, producing the same FileInfo the
-// remote panel uses so both panels render identically.
+// Package local browses the local filesystem, producing the same file.Info the
+// remote panel uses so both panels render identically. It is the local
+// counterpart to internal/remote.
 package local
 
 import (
 	"os"
 	"path/filepath"
 
-	"github.com/cosmocode/k8tc/internal/transfer"
+	"github.com/cosmocode/k8tc/internal/file"
 )
 
-// List returns the entries of dir as transfer.FileInfo, sorted dirs-first, with
-// a synthesized ".." prepended unless dir is the filesystem root.
-func List(dir string) ([]transfer.FileInfo, error) {
+// FS is a lister over the local filesystem. It carries no state; it exists so
+// the local side satisfies the same List interface as the remote side.
+type FS struct{}
+
+// List implements the panel lister for local directories.
+func (FS) List(dir string) ([]file.Info, error) { return List(dir) }
+
+// List returns the entries of dir as file.Info, sorted dirs-first, with a
+// synthesized ".." prepended unless dir is the filesystem root.
+func List(dir string) ([]file.Info, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
-	files := make([]transfer.FileInfo, 0, len(entries))
+	files := make([]file.Info, 0, len(entries))
 	for _, e := range entries {
 		info, err := e.Info()
 		if err != nil {
@@ -24,7 +32,7 @@ func List(dir string) ([]transfer.FileInfo, error) {
 			// it rather than failing the whole listing.
 			continue
 		}
-		files = append(files, transfer.FileInfo{
+		files = append(files, file.Info{
 			Name:    info.Name(),
 			Size:    info.Size(),
 			Mode:    info.Mode().String(),
@@ -32,9 +40,9 @@ func List(dir string) ([]transfer.FileInfo, error) {
 			ModTime: info.ModTime(),
 		})
 	}
-	transfer.Sort(files)
+	file.Sort(files)
 	if filepath.Clean(dir) != string(filepath.Separator) {
-		files = append([]transfer.FileInfo{{Name: "..", Mode: "drwxr-xr-x", IsDir: true}}, files...)
+		files = append([]file.Info{{Name: "..", Mode: "drwxr-xr-x", IsDir: true}}, files...)
 	}
 	return files, nil
 }

@@ -9,9 +9,22 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/cosmocode/k8tc/internal/local"
-	"github.com/cosmocode/k8tc/internal/transfer"
+	"github.com/cosmocode/k8tc/internal/file"
 )
+
+// lister reads a directory on one side of the view (local disk or a pod). Both
+// internal/local and internal/remote satisfy it, which is what lets a panel
+// load itself without the model knowing which side it is.
+type lister interface {
+	List(path string) ([]file.Info, error)
+}
+
+// transferer moves a file or directory tree between local disk and the pod.
+// internal/transfer.Manager satisfies it.
+type transferer interface {
+	Push(localPath, remotePath string, progress func(int64)) error
+	Pull(remotePath, localPath string, progress func(int64)) error
+}
 
 type focus int
 
@@ -31,9 +44,9 @@ const (
 
 // Model is the Bubble Tea root model.
 type Model struct {
-	transfer  transfer.Transfer
-	pod       string
-	container string
+	localList  lister
+	remoteList lister
+	xfer       transferer
 
 	local  Panel
 	remote Panel
@@ -54,21 +67,19 @@ type Model struct {
 	quitting bool
 }
 
-// New builds the initial model. localPath/remotePath are the starting dirs.
-func New(t transfer.Transfer, pod, container, remotePath, localPath string) Model {
-	remoteLabel := "POD " + pod
-	if container != "" {
-		remoteLabel += " [" + container + "]"
-	}
+// New builds the initial model. localList/remoteList load each panel and xfer
+// performs copies between them; remoteLabel is the pod-side panel title and
+// localPath/remotePath are the starting dirs.
+func New(localList, remoteList lister, xfer transferer, remoteLabel, remotePath, localPath string) Model {
 	return Model{
-		transfer:  t,
-		pod:       pod,
-		container: container,
-		focus:     focusLocal,
-		keys:      defaultKeys(),
-		status:    "F5 to copy the highlighted entry to the other panel.",
-		local:     Panel{label: "LOCAL", cwd: localPath},
-		remote:    Panel{label: remoteLabel, cwd: remotePath, isRemote: true},
+		localList:  localList,
+		remoteList: remoteList,
+		xfer:       xfer,
+		focus:      focusLocal,
+		keys:       defaultKeys(),
+		status:     "F5 to copy the highlighted entry to the other panel.",
+		local:      Panel{label: "LOCAL", cwd: localPath},
+		remote:     Panel{label: remoteLabel, cwd: remotePath, isRemote: true},
 	}
 }
 
@@ -84,7 +95,7 @@ func (m Model) Init() tea.Cmd {
 type panelLoadedMsg struct {
 	which   focus
 	path    string
-	files   []transfer.FileInfo
+	files   []file.Info
 	err     error
 	mode    cursorMode
 	selName string
@@ -101,22 +112,16 @@ type progressClosedMsg struct{}
 // --- commands ---
 
 func (m Model) loadPanel(which focus, p string, mode cursorMode, selName string) tea.Cmd {
-	t, pod, container := m.transfer, m.pod, m.container
+	ls := m.listerFor(which)
 	return func() tea.Msg {
-		var files []transfer.FileInfo
-		var err error
-		if which == focusLocal {
-			files, err = local.List(p)
-		} else {
-			files, err = t.List(pod, container, p)
-		}
+		files, err := ls.List(p)
 		return panelLoadedMsg{which: which, path: p, files: files, err: err, mode: mode, selName: selName}
 	}
 }
 
-func pushCmd(t transfer.Transfer, pod, container, localFull, remoteDest string, ch chan int64) tea.Cmd {
+func pushCmd(x transferer, localFull, remoteDest string, ch chan int64) tea.Cmd {
 	return func() tea.Msg {
-		err := t.Push(pod, container, localFull, remoteDest, func(n int64) {
+		err := x.Push(localFull, remoteDest, func(n int64) {
 			select {
 			case ch <- n:
 			default:
@@ -127,9 +132,9 @@ func pushCmd(t transfer.Transfer, pod, container, localFull, remoteDest string, 
 	}
 }
 
-func pullCmd(t transfer.Transfer, pod, container, remoteFull, localDest string, ch chan int64) tea.Cmd {
+func pullCmd(x transferer, remoteFull, localDest string, ch chan int64) tea.Cmd {
 	return func() tea.Msg {
-		err := t.Pull(pod, container, remoteFull, localDest, func(n int64) {
+		err := x.Pull(remoteFull, localDest, func(n int64) {
 			select {
 			case ch <- n:
 			default:
@@ -285,10 +290,10 @@ func (m Model) handleCopy() (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	if m.focus == focusLocal {
 		localFull := filepath.Join(m.local.cwd, sel.Name)
-		cmd = pushCmd(m.transfer, m.pod, m.container, localFull, m.remote.cwd, m.progressCh)
+		cmd = pushCmd(m.xfer, localFull, m.remote.cwd, m.progressCh)
 	} else {
 		remoteFull := path.Join(m.remote.cwd, sel.Name)
-		cmd = pullCmd(m.transfer, m.pod, m.container, remoteFull, m.local.cwd, m.progressCh)
+		cmd = pullCmd(m.xfer, remoteFull, m.local.cwd, m.progressCh)
 	}
 	return m, tea.Batch(cmd, listenProgress(m.progressCh))
 }
@@ -367,7 +372,14 @@ func (m *Model) panelPtr(which focus) *Panel {
 
 func (m *Model) focusedPanel() *Panel { return m.panelPtr(m.focus) }
 
-func indexOf(files []transfer.FileInfo, name string) int {
+func (m Model) listerFor(which focus) lister {
+	if which == focusLocal {
+		return m.localList
+	}
+	return m.remoteList
+}
+
+func indexOf(files []file.Info, name string) int {
 	for i, f := range files {
 		if f.Name == name {
 			return i

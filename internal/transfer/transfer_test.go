@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/cosmocode/k8tc/internal/kube"
 )
 
 // fakeKubectl writes a shell script that mimics `kubectl exec`: it discards
@@ -30,37 +32,8 @@ func fakeKubectl(t *testing.T) string {
 	return bin
 }
 
-func TestKubectlList(t *testing.T) {
-	k := &Kubectl{Bin: fakeKubectl(t)}
-	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "assets"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("hello"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	files, err := k.List("pod", "", root)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	got := map[string]FileInfo{}
-	for _, f := range files {
-		got[f.Name] = f
-	}
-	if _, ok := got[".."]; !ok {
-		t.Errorf("expected synthesized '..' entry")
-	}
-	if d, ok := got["assets"]; !ok || !d.IsDir {
-		t.Errorf("assets missing or not a dir: %+v", d)
-	}
-	if f, ok := got["index.html"]; !ok || f.IsDir || f.Size != 5 {
-		t.Errorf("index.html wrong: %+v", f)
-	}
-}
-
-func TestKubectlPullPreservesMetadata(t *testing.T) {
-	k := &Kubectl{Bin: fakeKubectl(t)}
+func TestPullPreservesMetadata(t *testing.T) {
+	m := &Manager{Client: &kube.Client{Bin: fakeKubectl(t), Pod: "pod"}}
 
 	// "Remote" tree.
 	remote := t.TempDir()
@@ -83,7 +56,7 @@ func TestKubectlPullPreservesMetadata(t *testing.T) {
 
 	localDest := t.TempDir()
 	var lastN int64
-	if err := k.Pull("pod", "", srcDir, localDest, func(n int64) { lastN = n }); err != nil {
+	if err := m.Pull(srcDir, localDest, func(n int64) { lastN = n }); err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
 
@@ -106,8 +79,8 @@ func TestKubectlPullPreservesMetadata(t *testing.T) {
 	}
 }
 
-func TestKubectlPushPreservesMetadata(t *testing.T) {
-	k := &Kubectl{Bin: fakeKubectl(t)}
+func TestPushPreservesMetadata(t *testing.T) {
+	m := &Manager{Client: &kube.Client{Bin: fakeKubectl(t), Pod: "pod"}}
 
 	localSrcDir := t.TempDir()
 	dir := filepath.Join(localSrcDir, "app")
@@ -121,7 +94,7 @@ func TestKubectlPushPreservesMetadata(t *testing.T) {
 
 	remoteDest := t.TempDir()
 	var lastN int64
-	if err := k.Push("pod", "", dir, remoteDest, func(n int64) { lastN = n }); err != nil {
+	if err := m.Push(dir, remoteDest, func(n int64) { lastN = n }); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
 
@@ -138,7 +111,7 @@ func TestKubectlPushPreservesMetadata(t *testing.T) {
 	}
 }
 
-func TestKubectlMissingTarReported(t *testing.T) {
+func TestMissingTarReported(t *testing.T) {
 	// A fake kubectl that always reports tar missing, like a distroless image.
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-kubectl")
@@ -148,15 +121,43 @@ func TestKubectlMissingTarReported(t *testing.T) {
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	k := &Kubectl{Bin: bin}
+	m := &Manager{Client: &kube.Client{Bin: bin, Pod: "pod"}}
 
 	// Push: the pod side (consumer) is the one that fails.
 	src := t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "x"), []byte("y"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := k.Push("pod", "", filepath.Join(src, "x"), "/dest", func(int64) {})
+	err := m.Push(filepath.Join(src, "x"), "/dest", func(int64) {})
 	if err == nil || err.Error() != "pod has no `tar`; cannot transfer" {
 		t.Errorf("Push error = %v, want missing-tar message", err)
 	}
 }
+
+func TestClassifyMissingTar(t *testing.T) {
+	cases := []string{
+		`OCI runtime exec failed: exec failed: unable to start container process: exec: "tar": executable file not found in $PATH: unknown`,
+		`sh: tar: not found`,
+		`tar: command not found`,
+	}
+	for _, stderr := range cases {
+		err := classify(errExit{}, stderr)
+		if err == nil || err.Error() != "pod has no `tar`; cannot transfer" {
+			t.Errorf("classify(%q) = %v, want missing-tar message", stderr, err)
+		}
+	}
+}
+
+func TestClassifyOtherError(t *testing.T) {
+	err := classify(errExit{}, "tar: /root/secret: Cannot open: Permission denied")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if got := err.Error(); got == "pod has no `tar`; cannot transfer" {
+		t.Errorf("permission error misclassified as missing tar")
+	}
+}
+
+type errExit struct{}
+
+func (errExit) Error() string { return "exit status 2" }
