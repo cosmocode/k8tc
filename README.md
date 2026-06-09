@@ -11,7 +11,7 @@ between your local machine and a Kubernetes pod. Transfers stream `tar` over
 │ index.html                 1.2K ││ index.html                 1.2K │
 │ go.mod                      56B ││ go.mod                      56B │
 ╰─────────────────────────────────╯╰─────────────────────────────────╯
- Tab switch  ↑↓ move  ⏎ open  F5 copy  r refresh  q quit   <status>
+ Tab switch  ↑↓ move  ⏎ open  Space mark  F5 copy  r refresh  q quit
 ```
 
 ## Requirements
@@ -53,14 +53,22 @@ k8tc --pod <name> [flags]
 | `↑`/`↓`, `k`/`j` | Move the cursor                                             |
 | `PgUp`/`PgDn`  | Page the cursor                                               |
 | `Enter`        | Descend into a directory / ascend via `..`                    |
-| `F5` or `c`    | Copy the highlighted file or directory to the other panel     |
+| `Space`/`Insert` | Mark/unmark the entry under the cursor and move down        |
+| `F5` or `c`    | Copy the marked entries (or the highlighted one) to the other panel |
 | `r`            | Refresh the focused panel                                     |
 | `q`, `Ctrl+C`  | Quit                                                          |
 
-`F5` copies the highlighted entry from the **focused** panel into the **other**
-panel's current directory. Directory copies are recursive. Transfers run
-asynchronously, showing a byte count in the status line; the UI stays responsive
-and a large transfer never freezes it.
+Mark one or more files/directories with `Space`, then press `F5` to copy them
+from the **focused** panel into the **other** panel's current directory. If
+nothing is marked, `F5` copies just the highlighted entry. Marks are scoped to a
+directory: navigating away clears them.
+
+`F5` first shows a **confirmation dialog** summarising what will be copied and
+where. Once confirmed, a **progress dialog** reports the current item, item
+count and bytes transferred, with `Esc` to **abort**. Aborting stops the queue
+and leaves already-copied items in place (the partially-copied item is not
+rolled back). Directory copies are recursive; transfers run asynchronously, so a
+large transfer never freezes the UI.
 
 ## A note on ownership
 

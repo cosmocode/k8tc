@@ -1,6 +1,7 @@
 package transfer
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,7 +57,7 @@ func TestPullPreservesMetadata(t *testing.T) {
 
 	localDest := t.TempDir()
 	var lastN int64
-	if err := m.Pull(srcDir, localDest, func(n int64) { lastN = n }); err != nil {
+	if err := m.Pull(context.Background(), srcDir, localDest, func(n int64) { lastN = n }); err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
 
@@ -94,7 +95,7 @@ func TestPushPreservesMetadata(t *testing.T) {
 
 	remoteDest := t.TempDir()
 	var lastN int64
-	if err := m.Push(dir, remoteDest, func(n int64) { lastN = n }); err != nil {
+	if err := m.Push(context.Background(), dir, remoteDest, func(n int64) { lastN = n }); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
 
@@ -108,6 +109,19 @@ func TestPushPreservesMetadata(t *testing.T) {
 	}
 	if lastN == 0 {
 		t.Errorf("progress callback never fired")
+	}
+}
+
+func TestPushCanceledContext(t *testing.T) {
+	m := &Manager{Client: &kube.Client{Bin: fakeKubectl(t), Pod: "pod"}}
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "x"), []byte("y"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // canceled before the transfer starts: it must not succeed
+	if err := m.Push(ctx, filepath.Join(src, "x"), t.TempDir(), func(int64) {}); err == nil {
+		t.Error("Push with a canceled context should fail, got nil")
 	}
 }
 
@@ -128,7 +142,7 @@ func TestMissingTarReported(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "x"), []byte("y"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := m.Push(filepath.Join(src, "x"), "/dest", func(int64) {})
+	err := m.Push(context.Background(), filepath.Join(src, "x"), "/dest", func(int64) {})
 	if err == nil || err.Error() != "pod has no `tar`; cannot transfer" {
 		t.Errorf("Push error = %v, want missing-tar message", err)
 	}

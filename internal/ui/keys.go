@@ -10,8 +10,10 @@ type keyMap struct {
 	PgDn    key.Binding
 	Tab     key.Binding
 	Enter   key.Binding
+	Mark    key.Binding
 	Copy    key.Binding
 	Refresh key.Binding
+	Cancel  key.Binding
 	Quit    key.Binding
 }
 
@@ -23,8 +25,10 @@ func defaultKeys() keyMap {
 		PgDn:    key.NewBinding(key.WithKeys("pgdown")),
 		Tab:     key.NewBinding(key.WithKeys("tab")),
 		Enter:   key.NewBinding(key.WithKeys("enter")),
+		Mark:    key.NewBinding(key.WithKeys(" ", "insert")),
 		Copy:    key.NewBinding(key.WithKeys("f5", "c")),
 		Refresh: key.NewBinding(key.WithKeys("r")),
+		Cancel:  key.NewBinding(key.WithKeys("esc")),
 		Quit:    key.NewBinding(key.WithKeys("q", "ctrl+c")),
 	}
 }

@@ -6,6 +6,7 @@ package transfer
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -30,23 +31,25 @@ type Manager struct {
 
 // Pull streams `kubectl exec -- tar c` from the pod into a local `tar x`,
 // copying remotePath (file or dir) into the directory localPath. progress is
-// called with the cumulative number of bytes streamed so far.
-func (m *Manager) Pull(remotePath, localPath string, progress func(int64)) error {
+// called with the cumulative number of bytes streamed so far. Canceling ctx
+// kills both tar processes, which is how an in-flight transfer is aborted.
+func (m *Manager) Pull(ctx context.Context, remotePath, localPath string, progress func(int64)) error {
 	parent := path.Dir(remotePath)
 	base := path.Base(remotePath)
-	src := m.Client.Exec(false, append([]string{"tar"}, createArgs(parent, base)...)...)
-	dst := exec.Command("tar", extractArgs(m.PreserveOwnership, localPath)...)
+	src := m.Client.ExecContext(ctx, false, append([]string{"tar"}, createArgs(parent, base)...)...)
+	dst := exec.CommandContext(ctx, "tar", extractArgs(m.PreserveOwnership, localPath)...)
 	return pipe(src, dst, progress)
 }
 
 // Push streams a local `tar c` into `kubectl exec -i -- tar x` in the pod,
 // copying localPath (file or dir) into the directory remotePath. progress is
-// called with the cumulative number of bytes streamed so far.
-func (m *Manager) Push(localPath, remotePath string, progress func(int64)) error {
+// called with the cumulative number of bytes streamed so far. Canceling ctx
+// kills both tar processes, which is how an in-flight transfer is aborted.
+func (m *Manager) Push(ctx context.Context, localPath, remotePath string, progress func(int64)) error {
 	parent := filepath.Dir(localPath)
 	base := filepath.Base(localPath)
-	src := exec.Command("tar", createArgs(parent, base)...)
-	dst := m.Client.Exec(true, append([]string{"tar"}, extractArgs(m.PreserveOwnership, remotePath)...)...)
+	src := exec.CommandContext(ctx, "tar", createArgs(parent, base)...)
+	dst := m.Client.ExecContext(ctx, true, append([]string{"tar"}, extractArgs(m.PreserveOwnership, remotePath)...)...)
 	return pipe(src, dst, progress)
 }
 

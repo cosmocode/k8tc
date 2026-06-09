@@ -20,6 +20,11 @@ type Panel struct {
 	offset   int
 	isRemote bool
 
+	// marked holds the names of entries selected for a multi-item copy. ".."
+	// is never marked. It is keyed by name, so it only makes sense within the
+	// current cwd — navigation clears it, a refresh prunes stale names.
+	marked map[string]bool
+
 	width     int // inner content width (inside the border)
 	height    int // inner content height (title + rows)
 	innerRows int // file rows visible (height - 1)
@@ -30,6 +35,58 @@ func (p *Panel) selected() *file.Info {
 		return nil
 	}
 	return &p.files[p.cursor]
+}
+
+// toggleMark flips the mark on the entry under the cursor. ".." can't be marked.
+func (p *Panel) toggleMark() {
+	sel := p.selected()
+	if sel == nil || sel.Name == ".." {
+		return
+	}
+	if p.marked == nil {
+		p.marked = map[string]bool{}
+	}
+	if p.marked[sel.Name] {
+		delete(p.marked, sel.Name)
+	} else {
+		p.marked[sel.Name] = true
+	}
+}
+
+func (p *Panel) isMarked(name string) bool { return p.marked[name] }
+
+func (p *Panel) clearMarks() { p.marked = nil }
+
+// markedInfos returns the marked entries that still exist in the listing, in
+// display order, so a copy batch follows what the user sees on screen.
+func (p *Panel) markedInfos() []file.Info {
+	if len(p.marked) == 0 {
+		return nil
+	}
+	out := make([]file.Info, 0, len(p.marked))
+	for _, f := range p.files {
+		if f.Name != ".." && p.marked[f.Name] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// pruneMarks drops marks whose entries no longer exist, e.g. after a refresh
+// or once a copy has reloaded the panel.
+func (p *Panel) pruneMarks() {
+	if len(p.marked) == 0 {
+		return
+	}
+	exists := make(map[string]bool, len(p.files))
+	for _, f := range p.files {
+		exists[f.Name] = true
+	}
+	for name := range p.marked {
+		if !exists[name] {
+			delete(p.marked, name)
+		}
+	}
 }
 
 func (p *Panel) moveCursor(delta int) {
@@ -78,12 +135,15 @@ func (p *Panel) render(focused bool) string {
 			continue
 		}
 		f := p.files[idx]
-		row := formatRow(f, p.width)
+		marked := p.isMarked(f.Name)
+		row := formatRow(f, marked, p.width)
 		switch {
 		case idx == p.cursor && focused:
 			row = cursorStyle.Render(row)
 		case idx == p.cursor:
 			row = cursorBlurStyle.Render(row)
+		case marked:
+			row = markedStyle.Render(row)
 		case f.IsDir:
 			row = dirStyle.Render(row)
 		default:
@@ -100,14 +160,19 @@ func (p *Panel) render(focused bool) string {
 	return style.Width(p.width).Height(p.height).Render(body)
 }
 
+// markGlyph fills the left gutter of a marked row. It is part of the row text
+// (not just a color) so the mark stays visible under the cursor highlight.
+const markGlyph = "•"
+
 // formatRow lays out one entry: name on the left (dirs get a trailing "/"),
-// human-readable size right-aligned for files. The result is exactly width
-// display cells wide so row highlighting fills the panel.
-func formatRow(f file.Info, width int) string {
+// human-readable size right-aligned for files. A marked entry shows markGlyph
+// in the left gutter. The result is exactly width display cells wide so row
+// highlighting fills the panel.
+func formatRow(f file.Info, marked bool, width int) string {
 	if width <= 2 {
 		return strings.Repeat(" ", max(0, width))
 	}
-	inner := width - 2 // one space of padding on each side
+	inner := width - 2 // one gutter cell on the left, one padding cell on the right
 
 	name := f.Name
 	if f.IsDir && f.Name != ".." {
@@ -125,7 +190,11 @@ func formatRow(f file.Info, width int) string {
 	} else {
 		content = truncate(name, inner)
 	}
-	return " " + padRight(content, inner) + " "
+	gutter := " "
+	if marked {
+		gutter = markGlyph
+	}
+	return gutter + padRight(content, inner) + " "
 }
 
 // humanSize renders a byte count compactly (e.g. 1.2M).

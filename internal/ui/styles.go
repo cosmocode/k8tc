@@ -15,6 +15,7 @@ var (
 	colorCurFg     = lipgloss.Color("230")
 	colorCurBlurBg = lipgloss.Color("238") // unfocused cursor row background
 	colorCurBlurFg = lipgloss.Color("252")
+	colorMark      = lipgloss.Color("220") // yellow — marked entries
 )
 
 var (
@@ -31,8 +32,17 @@ var (
 
 	cursorStyle     = lipgloss.NewStyle().Background(colorCurBg).Foreground(colorCurFg)
 	cursorBlurStyle = lipgloss.NewStyle().Background(colorCurBlurBg).Foreground(colorCurBlurFg)
+	markedStyle     = lipgloss.NewStyle().Foreground(colorMark).Bold(true)
 
 	helpStyle   = lipgloss.NewStyle().Foreground(colorHelp)
 	statusStyle = lipgloss.NewStyle().Foreground(colorStatus)
 	errorStyle  = lipgloss.NewStyle().Foreground(colorError).Bold(true)
+
+	// Dialog (centered modal) styling.
+	dialogStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorFocus).
+			Padding(0, 1)
+	dialogTitleStyle  = lipgloss.NewStyle().Foreground(colorTitle).Bold(true)
+	dialogButtonStyle = lipgloss.NewStyle().Foreground(colorHelp)
 )

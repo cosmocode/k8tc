@@ -38,9 +38,13 @@ func TestFormatRowWidth(t *testing.T) {
 			{Name: "..", IsDir: true},
 			{Name: "ünïcödé-名前.txt", Size: 3},
 		} {
-			row := formatRow(f, width)
-			if got := lipgloss.Width(row); got != width {
-				t.Errorf("formatRow(%q, %d) width = %d, want %d (%q)", f.Name, width, got, width, row)
+			// The mark glyph occupies the gutter, so a marked row must still be
+			// exactly the panel width.
+			for _, marked := range []bool{false, true} {
+				row := formatRow(f, marked, width)
+				if got := lipgloss.Width(row); got != width {
+					t.Errorf("formatRow(%q, marked=%v, %d) width = %d, want %d (%q)", f.Name, marked, width, got, width, row)
+				}
 			}
 		}
 	}

@@ -6,7 +6,10 @@
 // without touching the code above.
 package kube
 
-import "os/exec"
+import (
+	"context"
+	"os/exec"
+)
 
 // Client runs commands inside a single pod/container. Pod and Container are
 // fixed for a session, so they are bound on the Client rather than passed to
@@ -34,6 +37,12 @@ func (c *Client) bin() string {
 // Set stdin when the command needs to read from stdin (the -i flag), as a tar
 // extract does on the receiving end of a push.
 func (c *Client) Exec(stdin bool, cmd ...string) *exec.Cmd {
+	return c.ExecContext(context.Background(), stdin, cmd...)
+}
+
+// ExecContext is Exec bound to a context, so the kubectl process is killed when
+// the context is canceled — this is how an in-flight transfer is aborted.
+func (c *Client) ExecContext(ctx context.Context, stdin bool, cmd ...string) *exec.Cmd {
 	args := []string{}
 	if c.Namespace != "" {
 		args = append(args, "-n", c.Namespace)
@@ -48,5 +57,5 @@ func (c *Client) Exec(stdin bool, cmd ...string) *exec.Cmd {
 	}
 	args = append(args, "--")
 	args = append(args, cmd...)
-	return exec.Command(c.bin(), args...)
+	return exec.CommandContext(ctx, c.bin(), args...)
 }
