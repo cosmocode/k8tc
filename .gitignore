@@ -1,0 +1,7 @@
+# Build artifacts
+/k8tc
+/k8tc-*
+
+# Test binaries / coverage
+*.test
+*.out
