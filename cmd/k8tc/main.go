@@ -19,6 +19,10 @@ import (
 	"github.com/cosmocode/k8tc/internal/ui"
 )
 
+// version is the build version, stamped at release time via
+// -ldflags "-X main.version=<tag>". It is "dev" for local builds.
+var version = "dev"
+
 func main() {
 	var (
 		kubeContext string
@@ -28,6 +32,7 @@ func main() {
 		remotePath  string
 		localPath   string
 		preserve    bool
+		showVersion bool
 	)
 
 	flag.StringVar(&kubeContext, "context", "", "kube context (kubectl --context); default current")
@@ -41,7 +46,13 @@ func main() {
 	flag.BoolVar(&preserve, "preserve-ownership", false,
 		"attempt to restore owner UID/GID on extract (--same-owner --numeric-owner); "+
 			"only effective against a privileged extract target")
+	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Println("k8tc", version)
+		return
+	}
 
 	// Fail fast if kubectl is missing rather than surfacing it on first list.
 	if _, err := exec.LookPath("kubectl"); err != nil {
