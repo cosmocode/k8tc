@@ -4,15 +4,7 @@ A two-panel terminal UI (Midnight Commander style) for transferring files
 between your local machine and a Kubernetes pod. Transfers stream `tar` over
 `kubectl exec`, so file **mode** bits and **mtime** are preserved.
 
-```
-╭─ LOCAL: /home/user/project ─────╮╭─ POD nginx-abc: /var/www ───────╮
-│ ..                              ││ ..                              │
-│ assets/                         ││ assets/                         │
-│ index.html                 1.2K ││ index.html                 1.2K │
-│ go.mod                      56B ││ go.mod                      56B │
-╰─────────────────────────────────╯╰─────────────────────────────────╯
- Tab switch  ↑↓ move  ⏎ open  Space mark  F4 edit  F5 copy  F8 del  r refresh  q quit
-```
+![Screenshot](screenshot.png)
 
 ## Requirements
 
@@ -26,6 +18,8 @@ between your local machine and a Kubernetes pod. Transfers stream `tar` over
 
 ```sh
 CGO_ENABLED=0 go build -o k8tc ./cmd/k8tc
+# or
+make
 ```
 
 Produces a single static binary.
@@ -41,9 +35,7 @@ from context to namespace to pod: pick a context (skipped if you only have one),
 then a namespace, then a pod (and a container, when a pod has more than one).
 Type to filter the current list, `↑`/`↓` to move, `Enter` to descend/select,
 `Esc` to clear the filter or back up a level (and to exit at the top), `Ctrl+C`
-to quit. `q` is *not* a quit key here — it's an ordinary filter character. Pass
-`--pod` (with the usual flags) to skip the picker entirely; pass `--context`
-to skip the context step, and `-n` to start straight on that namespace's pods.
+to quit. Pass flags to skip the picker steps.
 
 Listing namespaces needs cluster-wide permission; on a restricted cluster where
 `kubectl get namespaces` is refused, the picker falls back to a free-text
@@ -88,8 +80,8 @@ rolled back). Directory copies are recursive; transfers run asynchronously, so a
 large transfer never freezes the UI.
 
 `F8` deletes instead of copying, acting on the **focused** panel (marked entries,
-or the highlighted one). It shows a **confirmation dialog** — styled as a
-destructive action — that spells out what will be removed and from where.
+or the highlighted one). It shows a **confirmation dialog** that spells out what
+will be removed and from where.
 **Deletes are recursive and cannot be undone**: a directory and everything under
 it goes. Like copies, deletes run asynchronously with a progress dialog and `Esc`
 to abort the remaining items; entries already removed stay removed.
