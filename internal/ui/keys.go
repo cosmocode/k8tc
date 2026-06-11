@@ -11,6 +11,7 @@ type keyMap struct {
 	Tab     key.Binding
 	Enter   key.Binding
 	Mark    key.Binding
+	Edit    key.Binding
 	Copy    key.Binding
 	Delete  key.Binding
 	Mkdir   key.Binding
@@ -28,6 +29,7 @@ func defaultKeys() keyMap {
 		Tab:     key.NewBinding(key.WithKeys("tab")),
 		Enter:   key.NewBinding(key.WithKeys("enter")),
 		Mark:    key.NewBinding(key.WithKeys(" ", "insert")),
+		Edit:    key.NewBinding(key.WithKeys("f4", "e")),
 		Copy:    key.NewBinding(key.WithKeys("f5", "c")),
 		Delete:  key.NewBinding(key.WithKeys("f8", "d")),
 		Mkdir:   key.NewBinding(key.WithKeys("f7", "m")),

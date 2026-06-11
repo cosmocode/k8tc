@@ -11,7 +11,7 @@ between your local machine and a Kubernetes pod. Transfers stream `tar` over
 │ index.html                 1.2K ││ index.html                 1.2K │
 │ go.mod                      56B ││ go.mod                      56B │
 ╰─────────────────────────────────╯╰─────────────────────────────────╯
- Tab switch  ↑↓ move  ⏎ open  Space mark  F5 copy  F8 del  r refresh  q quit
+ Tab switch  ↑↓ move  ⏎ open  Space mark  F4 edit  F5 copy  F8 del  r refresh  q quit
 ```
 
 ## Requirements
@@ -54,6 +54,7 @@ k8tc --pod <name> [flags]
 | `PgUp`/`PgDn`  | Page the cursor                                               |
 | `Enter`        | Descend into a directory / ascend via `..`                    |
 | `Space`/`Insert` | Mark/unmark the entry under the cursor and move down        |
+| `F4` or `e`    | Edit the highlighted file in `$EDITOR` (round-trip via a temp copy) |
 | `F5` or `c`    | Copy the marked entries (or the highlighted one) to the other panel |
 | `F8` or `d`    | Delete the marked entries (or the highlighted one) from the focused panel |
 | `r`            | Refresh the focused panel                                     |
@@ -78,6 +79,15 @@ destructive action — that spells out what will be removed and from where.
 it goes. Like copies, deletes run asynchronously with a progress dialog and `Esc`
 to abort the remaining items; entries already removed stay removed.
 
+`F4` edits the **highlighted file** (on either panel) in your `$EDITOR`. The file
+is fetched to a private temporary directory — pulled from the pod, or copied
+locally — and opened there; k8tc releases the terminal so the editor runs as
+normal. When the editor exits, the working copy is written back to where it came
+from **only if its modification time changed** — save and it's pushed back,
+quit without saving and the original is left untouched. The temporary copy is
+always cleaned up. `$EDITOR` may carry flags (e.g. `code --wait`); if it is
+unset, `F4` reports that and does nothing. Directories and `..` are not editable.
+
 ## A note on ownership
 
 Mode bits and mtime are preserved without any special privilege. **Owner
@@ -94,15 +104,3 @@ extracting user rather than failing.
   container, or root locally). Against a rootless target it degrades to the same
   best-effort behavior, so don't be surprised if UIDs don't carry across.
 
-## Architecture
-
-```
-cmd/k8tc/main.go        entrypoint, flags, program start
-internal/transfer/      Transfer interface + kubectl-backed implementation
-internal/local/         local filesystem browsing
-internal/ui/            Bubble Tea model, panels, keys, styling
-```
-
-The remote filesystem is reached only through the `transfer.Transfer`
-interface, so the `kubectl`-backed implementation can later be swapped for a
-`client-go` one without touching the TUI.

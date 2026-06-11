@@ -68,6 +68,7 @@ const (
 	modeConfirmDelete               // confirm-before-delete dialog
 	modeDeleting                    // delete-in-progress dialog (with abort)
 	modeMkdir                       // new-folder text prompt
+	modeEdit                        // file fetched/edited in $EDITOR/written back
 )
 
 // Model is the Bubble Tea root model.
@@ -93,6 +94,7 @@ type Model struct {
 	job   copyJob
 	del   deleteJob
 	mkdir mkdirState
+	edit  editState
 
 	keys     keyMap
 	quitting bool
@@ -206,6 +208,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Reload the panel and land the cursor on the new directory.
 		return m, m.loadPanel(msg.side, msg.dir, cursorSelect, msg.name)
 
+	case editFetchedMsg:
+		if m.mode != modeEdit {
+			return m, nil
+		}
+		if msg.err != nil {
+			return m.discardEdit("Fetch failed: " + msg.err.Error())
+		}
+		m.edit = msg.state
+		m.status = "Editing " + m.edit.name + "…"
+		return m, m.runEditorCmd()
+
+	case editorFinishedMsg:
+		if m.mode != modeEdit {
+			return m, nil
+		}
+		return m.afterEditor(msg)
+
+	case editSentMsg:
+		if m.mode != modeEdit {
+			return m, nil
+		}
+		return m.afterEditSend(msg)
+
 	case progressClosedMsg:
 		return m, nil
 	}
@@ -231,6 +256,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleDeletingKey(msg)
 	case modeMkdir:
 		return m.handleMkdirKey(msg)
+	case modeEdit:
+		return m.handleEditKey(msg)
 	}
 
 	switch {
@@ -280,6 +307,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keys.Mkdir):
 		return m.handleMkdir()
+
+	case key.Matches(msg, m.keys.Edit):
+		return m.handleEdit()
 	}
 	return m, nil
 }
@@ -324,6 +354,10 @@ func (m Model) View() string {
 		return overlay.Composite(m.deletingDialog().box(m.width), bg, overlay.Center, overlay.Center, 0, 0)
 	case modeMkdir:
 		return overlay.Composite(m.mkdirDialog().box(m.width), bg, overlay.Center, overlay.Center, 0, 0)
+	case modeEdit:
+		// No dialog: the editor owns the screen while it runs, and the status
+		// line covers the brief fetch/write-back moments the panels show.
+		return bg
 	}
 	return bg
 }
@@ -339,7 +373,7 @@ func (m Model) browseView() string {
 }
 
 func (m Model) footer() string {
-	help := helpStyle.Render("Tab switch  ↑↓ move  ⏎ open  Space mark  F5 copy  F7 mkdir  F8 del  r refresh  q quit")
+	help := helpStyle.Render("Tab switch  ↑↓ move  ⏎ open  Space mark  F4 edit  F5 copy  F7 mkdir  F8 del  r refresh  q quit")
 	st := statusStyle
 	if m.statusErr {
 		st = errorStyle
