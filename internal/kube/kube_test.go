@@ -27,6 +27,12 @@ func TestClientExecArgs(t *testing.T) {
 			want:   []string{"kubectl", "-n", "prod", "exec", "-i", "web", "-c", "app", "--", "tar", "-x"},
 		},
 		{
+			name:   "context and namespace",
+			client: Client{Context: "staging", Namespace: "prod", Pod: "web"},
+			cmd:    []string{"ls"},
+			want:   []string{"kubectl", "--context", "staging", "-n", "prod", "exec", "web", "--", "ls"},
+		},
+		{
 			name:   "bin override",
 			client: Client{Pod: "web", Bin: "/usr/local/bin/kubectl"},
 			cmd:    []string{"id"},

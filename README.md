@@ -33,12 +33,27 @@ Produces a single static binary.
 ## Usage
 
 ```sh
-k8tc --pod <name> [flags]
+k8tc [--pod <name>] [flags]
 ```
+
+Run `k8tc` with **no `--pod`** and it opens an interactive picker that drills
+from context to namespace to pod: pick a context (skipped if you only have one),
+then a namespace, then a pod (and a container, when a pod has more than one).
+Type to filter the current list, `↑`/`↓` to move, `Enter` to descend/select,
+`Esc` to clear the filter or back up a level (and to exit at the top), `Ctrl+C`
+to quit. `q` is *not* a quit key here — it's an ordinary filter character. Pass
+`--pod` (with the usual flags) to skip the picker entirely; pass `--context`
+to skip the context step, and `-n` to start straight on that namespace's pods.
+
+Listing namespaces needs cluster-wide permission; on a restricted cluster where
+`kubectl get namespaces` is refused, the picker falls back to a free-text
+namespace field, prefilled with the namespace your kubeconfig sets for the
+chosen context (if any).
 
 | Flag                   | Meaning                                                        |
 |------------------------|----------------------------------------------------------------|
-| `--pod`                | Pod name (required).                                           |
+| `--pod`                | Pod name. Omit to choose interactively.                       |
+| `--context`            | Kube context (`kubectl --context`); default is the current one. |
 | `--namespace`, `-n`    | Namespace (passed to `kubectl -n`).                           |
 | `--container`, `-c`    | Container name (`kubectl exec -c`); omit for the default.     |
 | `--remote-path`        | Initial remote directory (default `/`).                       |

@@ -15,6 +15,9 @@ import (
 // fixed for a session, so they are bound on the Client rather than passed to
 // every call.
 type Client struct {
+	// Context is passed as `kubectl --context`. Empty means kubectl's current
+	// context.
+	Context string
 	// Namespace is passed as `kubectl -n`. Empty means kubectl's default.
 	Namespace string
 	// Pod is the target pod name.
@@ -44,6 +47,9 @@ func (c *Client) Exec(stdin bool, cmd ...string) *exec.Cmd {
 // the context is canceled — this is how an in-flight transfer is aborted.
 func (c *Client) ExecContext(ctx context.Context, stdin bool, cmd ...string) *exec.Cmd {
 	args := []string{}
+	if c.Context != "" {
+		args = append(args, "--context", c.Context)
+	}
 	if c.Namespace != "" {
 		args = append(args, "-n", c.Namespace)
 	}
